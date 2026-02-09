@@ -1,6 +1,0 @@
-[ITEMDEF i_test_ok]
-NAME=Test Item
-ON=@Create
-IF <SRC.NPC>
-ENDIF
-[EOF]

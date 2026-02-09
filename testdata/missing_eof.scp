@@ -1,4 +1,0 @@
-[CHARDEF c_missing_eof]
-NAME=Missing EOF
-ON=@Create
-SAY Hello
