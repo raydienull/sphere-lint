@@ -13,5 +13,5 @@ runs:
       run: go build -o sphere-lint ./
     - name: Run scanner
       shell: bash
-      working-directory: ${{ github.action_path }}
-      run: ./sphere-lint
+      working-directory: ${{ github.workspace }}
+      run: ${{ github.action_path }}/sphere-lint
