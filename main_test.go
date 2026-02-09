@@ -106,41 +106,44 @@ func TestLintBracketMismatch(t *testing.T) {
 }
 
 func TestLintDuplicateDefsAcrossFiles(t *testing.T) {
-	dir := t.TempDir()
-	prevScriptsDir := scriptsDir
-	scriptsDir = dir
-	t.Cleanup(func() { scriptsDir = prevScriptsDir })
-
-	defs := map[string]defLocation{}
-	contentA := strings.Join([]string{
-		"[ITEMDEF i_dup]",
-		"[EOF]",
-		"",
-	}, "\n")
-	contentB := strings.Join([]string{
-		"[ITEMDEF i_dup]",
-		"[EOF]",
-		"",
-	}, "\n")
-
-	pathA := writeTempFile(t, dir, "dup_a.scp", contentA)
-	pathB := writeTempFile(t, dir, "dup_b.scp", contentB)
-
-	first := lintFile(pathA, defs)
-	if len(first) != 0 {
-		t.Fatalf("expected no errors for first def, got %d", len(first))
+	dir := withTempScriptsDir(t)
+	defTypes := []string{
+		"ITEMDEF",
+		"CHARDEF",
+		"EVENTS",
+		"FUNCTION",
+		"REGIONTYPE",
+		"AREADEF",
+		"DIALOG",
+		"MENU",
+		"ROOMDEF",
+		"SKILL",
+		"SKILLCLASS",
+		"SKILLMENU",
+		"SPAWN",
+		"SPELL",
+		"TYPEDEF",
 	}
 
-	second := lintFile(pathB, defs)
-	assertHasMessage(t, second, "DUPLICATE: 'ITEMDEF I_DUP' already defined")
+	for _, defType := range defTypes {
+		defType := defType
+		t.Run(defType, func(t *testing.T) {
+			defs := map[string]defLocation{}
+			contentA := buildDefContent(defType, "dup")
+			contentB := buildDefContent(defType, "dup")
+
+			pathA := writeTempFile(t, dir, "dup_"+strings.ToLower(defType)+"_a.scp", contentA)
+			pathB := writeTempFile(t, dir, "dup_"+strings.ToLower(defType)+"_b.scp", contentB)
+
+			assertNoErrors(t, lintFile(pathA, defs), "first "+defType+" def")
+			assertHasMessage(t, lintFile(pathB, defs), "DUPLICATE: '"+defType+" DUP' already defined")
+		})
+	}
 }
 
 func lintFromContent(t *testing.T, name, content string) []lintError {
 	t.Helper()
-	dir := t.TempDir()
-	prevScriptsDir := scriptsDir
-	scriptsDir = dir
-	t.Cleanup(func() { scriptsDir = prevScriptsDir })
+	dir := withTempScriptsDir(t)
 
 	path := writeTempFile(t, dir, name, content)
 	return lintFile(path, map[string]defLocation{})
@@ -153,6 +156,35 @@ func writeTempFile(t *testing.T, dir, name, content string) string {
 		t.Fatalf("write file: %v", err)
 	}
 	return path
+}
+
+func buildDefContent(defType, id string) string {
+	return strings.Join([]string{
+		"[" + defType + " " + id + "]",
+		"[EOF]",
+		"",
+	}, "\n")
+}
+
+func withTempScriptsDir(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	prevScriptsDir := scriptsDir
+	scriptsDir = dir
+	t.Cleanup(func() { scriptsDir = prevScriptsDir })
+	return dir
+}
+
+func assertNoErrors(t *testing.T, errs []lintError, context string) {
+	t.Helper()
+	if len(errs) == 0 {
+		return
+	}
+	parts := make([]string, 0, len(errs))
+	for _, e := range errs {
+		parts = append(parts, e.msg)
+	}
+	t.Fatalf("expected no errors for %s, got %d: %s", context, len(errs), strings.Join(parts, " | "))
 }
 
 func assertHasMessage(t *testing.T, errs []lintError, needle string) {

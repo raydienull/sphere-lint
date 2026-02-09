@@ -5,7 +5,7 @@ Linter for SphereServer .scp scripts. Runs as a GitHub Action and reports errors
 ## What It Checks
 
 - Missing [EOF] at the end of a file
-- Duplicate ITEMDEF, CHARDEF, and EVENTS
+- Duplicate ITEMDEF, CHARDEF, EVENTS, FUNCTION, REGIONTYPE, AREADEF, DIALOG, MENU, ROOMDEF, SKILL, SKILLCLASS, SKILLMENU, SPAWN, SPELL, and TYPEDEF
 - Unbalanced blocks (IF/ELSE/ENDIF, FOR/ENDFOR, WHILE/ENDWHILE, BEGIN/END, DO*/ENDDO)
 - Common typos and bracket errors
 - FOR, WHILE, and DORAND rules without arguments

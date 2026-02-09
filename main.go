@@ -180,7 +180,7 @@ func lintFile(path string, defs map[string]defLocation) []lintError {
 			} else {
 				inTextBlock = false
 			}
-			if defType == "ITEMDEF" || defType == "CHARDEF" || defType == "EVENTS" {
+			if defType == "ITEMDEF" || defType == "CHARDEF" || defType == "EVENTS" || defType == "FUNCTION" || defType == "REGIONTYPE" || defType == "AREADEF" || defType == "DIALOG" || defType == "MENU" || defType == "ROOMDEF" || defType == "SKILL" || defType == "SKILLCLASS" || defType == "SKILLMENU" || defType == "SPAWN" || defType == "SPELL" || defType == "TYPEDEF" {
 				id := strings.ToUpper(firstToken(defArgs))
 				if id != "" {
 					key := defType + " " + id
