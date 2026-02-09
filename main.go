@@ -35,19 +35,32 @@ var (
 	defHeaderPattern     = regexp.MustCompile(`^\[(\w+)\s+([^\]]+)\]`)
 	commentHeaderPattern = regexp.MustCompile(`(?i)^\[COMMENT(?:\s+[^\]]+)?\]`)
 	triggerPattern       = regexp.MustCompile(`(?i)^\s*ON\s*=\s*@?.+`)
-	textLinePattern      = regexp.MustCompile(`^\s*[\w\d\.]*\b(SAY|SYSMESSAGE|MESSAGE|EMOTE|SAYU|SAYUA|TITLE|NAME|DESC|PROMPTCONSOLE|BARK|GROUP|EVENTS|FLAGS|RECT|P|AUTHOR|PAGES)\b`)
 
-	commonErrors = []struct {
-		pattern *regexp.Regexp
-		msg     string
-		kind    string
-	}{
-		{regexp.MustCompile(`^\s*DORAN\b`), "TYPO: 'DORAN' found. Did you mean 'DORAND'?", "TYPO"},
-		{regexp.MustCompile(`^\s*EN\b`), "TYPO: 'EN' found. Did you mean 'ENDO', 'ENDDO', or 'ENDIF'?", "TYPO"},
-		{regexp.MustCompile(`^\s*IF\s*$`), "LOGIC: empty 'IF' statement.", "LOGIC"},
-		{regexp.MustCompile(`^\s*ELSEIF\s*$`), "LOGIC: empty 'ELSEIF' statement.", "LOGIC"},
-		{regexp.MustCompile(`^\s*ELIF\s*$`), "LOGIC: empty 'ELIF' statement.", "LOGIC"},
-		{regexp.MustCompile(`\[EOF\].+`), "CRITICAL: text found after [EOF].", "CRITICAL"},
+	textKeywords = map[string]bool{
+		"SAY": true, "SYSMESSAGE": true, "MESSAGE": true, "EMOTE": true, "SAYU": true, "SAYUA": true,
+		"TITLE": true, "NAME": true, "DESC": true, "PROMPTCONSOLE": true, "BARK": true, "GROUP": true,
+		"EVENTS": true, "FLAGS": true, "RECT": true, "P": true, "AUTHOR": true, "PAGES": true,
+	}
+
+	bracketPairs = map[rune]rune{')': '(', ']': '[', '}': '{'}
+
+	missingArgMessages = map[string]string{
+		"WHILE":    "LOGIC: WHILE missing condition.",
+		"FOR":      "LOGIC: FOR missing expression (expected: FOR <expr>, FOR <start> <end>, or FOR <var> <start> <end>).",
+		"DORAND":   "LOGIC: DORAND missing line count.",
+		"DOSWITCH": "LOGIC: DOSWITCH missing line number.",
+	}
+
+	forArgTokens = map[string]bool{
+		"FORCHARS":          true,
+		"FORITEMS":          true,
+		"FOROBJS":           true,
+		"FORCONT":           true,
+		"FORCONTID":         true,
+		"FORCONTTYPE":       true,
+		"FORINSTANCES":      true,
+		"FORCHARLAYER":      true,
+		"FORCHARMEMORYTYPE": true,
 	}
 
 	blockStartToEnd = map[string]string{
@@ -109,7 +122,7 @@ func main() {
 	}
 
 	for _, e := range allErrors {
-		printAnnotation(e)
+		printError(e)
 	}
 
 	fmt.Println("---------------------------------------------")
@@ -147,31 +160,19 @@ func lintFile(path string, defs map[string]defLocation) []lintError {
 		if cleaned != "" {
 			lastNonEmpty = cleaned
 		}
-		trimmed := strings.TrimSpace(raw)
-		if trimmed == "" || strings.HasPrefix(trimmed, "//") {
-			continue
-		}
 		if cleaned == "" {
 			continue
 		}
 
 		if commentHeaderPattern.MatchString(cleaned) {
-			if len(stack) > 0 {
-				for _, b := range stack {
-					errors = append(errors, lintError{file: rel, line: lineNum, kind: "BLOCK", msg: fmt.Sprintf("BLOCK: unclosed '%s' block before new section.", b.typ)})
-				}
-			}
+			errors = appendUnclosedStackErrors(errors, stack, rel, lineNum, " before new section.", false)
 			inTextBlock = true
 			stack = nil
 			continue
 		}
 
 		if defMatch := defHeaderPattern.FindStringSubmatch(cleaned); len(defMatch) == 3 {
-			if len(stack) > 0 {
-				for _, b := range stack {
-					errors = append(errors, lintError{file: rel, line: lineNum, kind: "BLOCK", msg: fmt.Sprintf("BLOCK: unclosed '%s' block before new section.", b.typ)})
-				}
-			}
+			errors = appendUnclosedStackErrors(errors, stack, rel, lineNum, " before new section.", false)
 			defType := strings.ToUpper(defMatch[1])
 			defArgs := strings.TrimSpace(defMatch[2])
 			if defType == "BOOK" || defType == "COMMENT" {
@@ -201,11 +202,7 @@ func lintFile(path string, defs map[string]defLocation) []lintError {
 
 		if triggerPattern.MatchString(cleaned) {
 			inTextBlock = false
-			if len(stack) > 0 {
-				for _, b := range stack {
-					errors = append(errors, lintError{file: rel, line: lineNum, kind: "BLOCK", msg: fmt.Sprintf("BLOCK: unclosed '%s' block before new trigger.", b.typ)})
-				}
-			}
+			errors = appendUnclosedStackErrors(errors, stack, rel, lineNum, " before new trigger.", false)
 			stack = nil
 			continue
 		}
@@ -214,72 +211,73 @@ func lintFile(path string, defs map[string]defLocation) []lintError {
 			continue
 		}
 
-		upper := strings.ToUpper(cleaned)
-		isWriteFile := strings.HasPrefix(upper, "SERV.WRITEFILE ")
-		isTextLine := textLinePattern.MatchString(cleaned)
-		isFlowControl := strings.HasPrefix(upper, "IF") || strings.HasPrefix(upper, "ELIF") || strings.HasPrefix(upper, "WHILE")
+		token := firstToken(cleaned)
+		upperToken := strings.ToUpper(token)
+		isWriteFile := hasPrefixFold(cleaned, "SERV.WRITEFILE ")
+		isTextLine := isTextKeyword(token)
+		isFlowControl := upperToken == "IF" || upperToken == "ELIF" || upperToken == "ELSEIF" || upperToken == "WHILE"
 		isAssignment := strings.Contains(cleaned, "=") && !isFlowControl
 
 		if !isTextLine && !isWriteFile {
 			if bracketErr := checkBrackets(cleaned); bracketErr != "" {
-				errors = append(errors, lintError{
-					file: rel,
-					line: lineNum,
-					kind: "SYNTAX",
-					msg:  "SYNTAX: brackets -> " + bracketErr,
-				})
+				errors = appendError(errors, rel, lineNum, "SYNTAX", "SYNTAX: brackets -> "+bracketErr)
 			}
 		}
 
 		if !isTextLine && !isAssignment {
-			for _, ce := range commonErrors {
-				if ce.pattern.MatchString(cleaned) {
-					errors = append(errors, lintError{file: rel, line: lineNum, kind: ce.kind, msg: ce.msg})
-				}
+			if upperToken == "DORAN" {
+				errors = appendError(errors, rel, lineNum, "TYPO", "TYPO: 'DORAN' found. Did you mean 'DORAND'?")
+			}
+			if upperToken == "EN" {
+				errors = appendError(errors, rel, lineNum, "TYPO", "TYPO: 'EN' found. Did you mean 'ENDO', 'ENDDO', or 'ENDIF'?")
+			}
+			if upperToken == "IF" && strings.TrimSpace(cleaned) == "IF" {
+				errors = appendError(errors, rel, lineNum, "LOGIC", "LOGIC: empty 'IF' statement.")
+			}
+			if upperToken == "ELSEIF" && strings.TrimSpace(cleaned) == "ELSEIF" {
+				errors = appendError(errors, rel, lineNum, "LOGIC", "LOGIC: empty 'ELSEIF' statement.")
+			}
+			if upperToken == "ELIF" && strings.TrimSpace(cleaned) == "ELIF" {
+				errors = appendError(errors, rel, lineNum, "LOGIC", "LOGIC: empty 'ELIF' statement.")
+			}
+			trimmed := strings.TrimSpace(cleaned)
+			if strings.HasPrefix(trimmed, "[EOF]") && trimmed != "[EOF]" {
+				errors = appendError(errors, rel, lineNum, "CRITICAL", "CRITICAL: text found after [EOF].")
 			}
 
-			token := firstToken(upper)
-			if token != "" {
-				fields := strings.Fields(cleaned)
-				if token == "WHILE" && len(fields) < 2 {
-					errors = append(errors, lintError{file: rel, line: lineNum, kind: "LOGIC", msg: "LOGIC: WHILE missing condition."})
-				}
-				if token == "FOR" && len(fields) < 2 {
-					errors = append(errors, lintError{file: rel, line: lineNum, kind: "LOGIC", msg: "LOGIC: FOR missing expression (expected: FOR <expr>, FOR <start> <end>, or FOR <var> <start> <end>)."})
-				}
-				if (token == "FORCHARS" || token == "FORITEMS" || token == "FOROBJS" || token == "FORCONT" || token == "FORCONTID" || token == "FORCONTTYPE" || token == "FORINSTANCES" || token == "FORCHARLAYER" || token == "FORCHARMEMORYTYPE") && len(fields) < 2 {
-					errors = append(errors, lintError{file: rel, line: lineNum, kind: "LOGIC", msg: fmt.Sprintf("LOGIC: %s missing argument.", token)})
-				}
-				if token == "DORAND" && len(fields) < 2 {
-					errors = append(errors, lintError{file: rel, line: lineNum, kind: "LOGIC", msg: "LOGIC: DORAND missing line count."})
-				}
-				if token == "DOSWITCH" && len(fields) < 2 {
-					errors = append(errors, lintError{file: rel, line: lineNum, kind: "LOGIC", msg: "LOGIC: DOSWITCH missing line number."})
+			if upperToken != "" {
+				fieldCount := countFields(cleaned, 2)
+				if fieldCount < 2 {
+					if msg, ok := missingArgMessages[upperToken]; ok {
+						errors = appendError(errors, rel, lineNum, "LOGIC", msg)
+					} else if forArgTokens[upperToken] {
+						errors = appendError(errors, rel, lineNum, "LOGIC", fmt.Sprintf("LOGIC: %s missing argument.", upperToken))
+					}
 				}
 
-				if endToken := normalizeEndToken(token); endToken != "" {
+				if endToken := normalizeEndToken(upperToken); endToken != "" {
 					if len(stack) == 0 {
-						errors = append(errors, lintError{file: rel, line: lineNum, kind: "BLOCK", msg: fmt.Sprintf("BLOCK: '%s' without opening block.", token)})
+						errors = appendError(errors, rel, lineNum, "BLOCK", fmt.Sprintf("BLOCK: '%s' without opening block.", upperToken))
 					} else {
 						last := stack[len(stack)-1]
 						stack = stack[:len(stack)-1]
 						expected := blockStartToEnd[last.typ]
 						if endToken != expected {
-							errors = append(errors, lintError{file: rel, line: lineNum, kind: "BLOCK", msg: fmt.Sprintf("BLOCK: mismatch. '%s' closed by '%s' (expected %s).", last.typ, token, expected)})
+							errors = appendError(errors, rel, lineNum, "BLOCK", fmt.Sprintf("BLOCK: mismatch. '%s' closed by '%s' (expected %s).", last.typ, upperToken, expected))
 						}
 					}
 					continue
 				}
 
-				if token == "ELSE" || token == "ELIF" || token == "ELSEIF" {
+				if upperToken == "ELSE" || upperToken == "ELIF" || upperToken == "ELSEIF" {
 					if len(stack) == 0 || stack[len(stack)-1].typ != "IF" {
-						errors = append(errors, lintError{file: rel, line: lineNum, kind: "BLOCK", msg: fmt.Sprintf("BLOCK: '%s' without matching IF.", token)})
+						errors = appendError(errors, rel, lineNum, "BLOCK", fmt.Sprintf("BLOCK: '%s' without matching IF.", upperToken))
 					}
 					continue
 				}
 
-				if endToken := blockStartToEnd[token]; endToken != "" {
-					stack = append(stack, blockState{typ: token, line: lineNum})
+				if endToken := blockStartToEnd[upperToken]; endToken != "" {
+					stack = append(stack, blockState{typ: upperToken, line: lineNum})
 					continue
 				}
 			}
@@ -287,20 +285,18 @@ func lintFile(path string, defs map[string]defLocation) []lintError {
 	}
 
 	if scanErr := scanner.Err(); scanErr != nil {
-		errors = append(errors, lintError{file: rel, line: lineNum, kind: "CRITICAL", msg: scanErr.Error()})
+		errors = appendError(errors, rel, lineNum, "CRITICAL", scanErr.Error())
 	}
 
 	if strings.ToUpper(strings.TrimSpace(lastNonEmpty)) != "[EOF]" {
 		if lineNum == 0 {
 			lineNum = 1
 		}
-		errors = append(errors, lintError{file: rel, line: lineNum, kind: "CRITICAL", msg: "CRITICAL: missing [EOF] at end of file."})
+		errors = appendError(errors, rel, lineNum, "CRITICAL", "CRITICAL: missing [EOF] at end of file.")
 	}
 
 	if len(stack) > 0 {
-		for _, b := range stack {
-			errors = append(errors, lintError{file: rel, line: b.line, kind: "BLOCK", msg: fmt.Sprintf("BLOCK: unclosed '%s' block.", b.typ)})
-		}
+		errors = appendUnclosedStackErrors(errors, stack, rel, lineNum, ".", true)
 	}
 
 	return errors
@@ -348,7 +344,6 @@ func normalizeEndToken(token string) string {
 
 func checkBrackets(line string) string {
 	stack := make([]rune, 0, 8)
-	pairs := map[rune]rune{')': '(', ']': '[', '}': '{'}
 	for _, ch := range line {
 		switch ch {
 		case '(', '[', '{':
@@ -357,7 +352,7 @@ func checkBrackets(line string) string {
 			if len(stack) == 0 {
 				return fmt.Sprintf("unexpected closing '%c'", ch)
 			}
-			expected := pairs[ch]
+			expected := bracketPairs[ch]
 			if stack[len(stack)-1] != expected {
 				return fmt.Sprintf("expected closing '%c' but found '%c'", stack[len(stack)-1], ch)
 			}
@@ -374,12 +369,27 @@ func checkBrackets(line string) string {
 	return ""
 }
 
-func printAnnotation(e lintError) {
-	msg := fmt.Sprintf("%s", e.msg)
+func printError(e lintError) {
 	if e.line <= 0 {
 		e.line = 1
 	}
-	fmt.Printf("::error file=%s,line=%d::%s\n", e.file, e.line, escapeAnnotation(msg))
+	if isGitHubActions() {
+		msg := e.msg
+		if e.file != "" {
+			msg = fmt.Sprintf("%s:%d: %s", e.file, e.line, msg)
+		}
+		fmt.Printf("::error file=%s,line=%d::%s\n", e.file, e.line, escapeAnnotation(msg))
+		return
+	}
+	if e.file != "" {
+		fmt.Printf("ERROR %s:%d: %s\n", e.file, e.line, e.msg)
+		return
+	}
+	fmt.Printf("ERROR %s\n", e.msg)
+}
+
+func isGitHubActions() bool {
+	return os.Getenv("GITHUB_ACTIONS") == "true"
 }
 
 func escapeAnnotation(msg string) string {
@@ -400,4 +410,77 @@ func toRelative(path string) string {
 		return path
 	}
 	return filepath.ToSlash(rel)
+}
+
+func appendUnclosedStackErrors(errors []lintError, stack []blockState, rel string, lineNum int, msgSuffix string, useBlockLine bool) []lintError {
+	if len(stack) == 0 {
+		return errors
+	}
+	for _, b := range stack {
+		errLine := lineNum
+		if useBlockLine {
+			errLine = b.line
+		}
+		errors = append(errors, lintError{file: rel, line: errLine, kind: "BLOCK", msg: fmt.Sprintf("BLOCK: unclosed '%s' block%s", b.typ, msgSuffix)})
+	}
+	return errors
+}
+
+func appendError(errors []lintError, rel string, lineNum int, kind, msg string) []lintError {
+	return append(errors, lintError{file: rel, line: lineNum, kind: kind, msg: msg})
+}
+
+func countFields(line string, max int) int {
+	count := 0
+	inField := false
+	for i := 0; i < len(line); i++ {
+		if line[i] == ' ' || line[i] == '\t' || line[i] == '\r' || line[i] == '\n' {
+			if inField {
+				inField = false
+			}
+			continue
+		}
+		if !inField {
+			count++
+			if max > 0 && count >= max {
+				return count
+			}
+			inField = true
+		}
+	}
+	return count
+}
+
+func hasPrefixFold(s, prefix string) bool {
+	if len(s) < len(prefix) {
+		return false
+	}
+	for i := 0; i < len(prefix); i++ {
+		sc := s[i]
+		pc := prefix[i]
+		if sc == pc {
+			continue
+		}
+		if 'a' <= sc && sc <= 'z' {
+			sc = sc - 'a' + 'A'
+		}
+		if 'a' <= pc && pc <= 'z' {
+			pc = pc - 'a' + 'A'
+		}
+		if sc != pc {
+			return false
+		}
+	}
+	return true
+}
+
+func isTextKeyword(token string) bool {
+	if token == "" {
+		return false
+	}
+	lastDot := strings.LastIndexByte(token, '.')
+	if lastDot >= 0 && lastDot+1 < len(token) {
+		token = token[lastDot+1:]
+	}
+	return textKeywords[strings.ToUpper(token)]
 }
