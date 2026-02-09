@@ -141,6 +141,24 @@ func TestLintDuplicateDefsAcrossFiles(t *testing.T) {
 	}
 }
 
+func TestLintDialogDuplicateWithSections(t *testing.T) {
+	content := strings.Join([]string{
+		"[DIALOG dialog]",
+		"[DIALOG dialog TEXT]",
+		"[DIALOG dialog BUTTON]",
+		"[DIALOG dialog TEXT]",
+		"[EOF]",
+		"",
+	}, "\n")
+
+	errs := lintFromContent(t, "dialog_sections.scp", content)
+
+	if len(errs) != 1 {
+		t.Fatalf("expected 1 error, got %d", len(errs))
+	}
+	assertHasMessage(t, errs, "DUPLICATE: 'DIALOG DIALOG TEXT' already defined")
+}
+
 func lintFromContent(t *testing.T, name, content string) []lintError {
 	t.Helper()
 	dir := withTempScriptsDir(t)

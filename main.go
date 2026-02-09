@@ -181,9 +181,19 @@ func lintFile(path string, defs map[string]defLocation) []lintError {
 				inTextBlock = false
 			}
 			if defType == "ITEMDEF" || defType == "CHARDEF" || defType == "EVENTS" || defType == "FUNCTION" || defType == "REGIONTYPE" || defType == "AREADEF" || defType == "DIALOG" || defType == "MENU" || defType == "ROOMDEF" || defType == "SKILL" || defType == "SKILLCLASS" || defType == "SKILLMENU" || defType == "SPAWN" || defType == "SPELL" || defType == "TYPEDEF" {
-				id := strings.ToUpper(firstToken(defArgs))
+				fields := strings.Fields(defArgs)
+				id := ""
+				if len(fields) > 0 {
+					id = strings.ToUpper(fields[0])
+				}
 				if id != "" {
 					key := defType + " " + id
+					if defType == "DIALOG" && len(fields) > 1 {
+						subType := strings.ToUpper(fields[1])
+						if subType == "TEXT" || subType == "BUTTON" {
+							key = key + " " + subType
+						}
+					}
 					if prev, ok := defs[key]; ok {
 						errors = append(errors, lintError{
 							file: rel,
