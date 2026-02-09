@@ -1,0 +1,34 @@
+# Sphere SCP Lint (Go Action)
+
+Linter for SphereServer .scp scripts. Runs as a GitHub Action and reports errors with file annotations.
+
+## What It Checks
+
+- Missing [EOF] at the end of a file
+- Duplicate ITEMDEF, CHARDEF, and EVENTS
+- Unbalanced blocks (IF/ELSE/ENDIF, FOR/ENDFOR, WHILE/ENDWHILE, BEGIN/END, DO*/ENDDO)
+- Common typos and bracket errors
+- FOR, WHILE, and DORAND rules without arguments
+
+## Use
+
+```yaml
+name: Lint Sphere scripts
+on:
+  push:
+  pull_request:
+
+jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: raydienull/sphere-lint@v1
+```
+
+## Behavior
+
+- Scans the repository for .scp files
+- Ignores .git, .github, backups, backup, and trash directories
+- Emits error annotations with file and line numbers
+- Fails the job if it finds errors

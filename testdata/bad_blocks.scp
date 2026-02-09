@@ -1,0 +1,9 @@
+[EVENTS e_badblocks]
+ON=@Create
+IF <SRC.NPC>
+FORITEMS
+ENDFOR
+ELSE
+ENDIF
+ENDWHILE
+[EOF]

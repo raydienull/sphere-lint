@@ -1,0 +1,7 @@
+[CHARDEF c_typo]
+ON=@Create
+DORAN
+IF
+SAY {Hello]
+ENDDO
+[EOF]
