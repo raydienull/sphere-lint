@@ -9,7 +9,9 @@ runs:
         go-version: "1.25"
     - name: Build scanner
       shell: bash
+      working-directory: ${{ github.action_path }}
       run: go build -o sphere-lint ./
     - name: Run scanner
       shell: bash
+      working-directory: ${{ github.action_path }}
       run: ./sphere-lint
