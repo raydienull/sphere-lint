@@ -1,0 +1,9 @@
+# Ignore scripts
+*.scp
+scripts/
+
+# Ignore log files
+*.log
+
+# Ignore temp folders
+temp/ 

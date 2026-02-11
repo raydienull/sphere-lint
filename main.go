@@ -21,6 +21,18 @@ type defLocation struct {
 	line int
 }
 
+type idReference struct {
+	file     string
+	line     int
+	defTypes []string
+	id       string
+}
+
+type refPattern struct {
+	re       *regexp.Regexp
+	defTypes []string
+}
+
 var (
 	scriptsDir = "."
 	extensions = []string{".scp"}
@@ -36,13 +48,43 @@ var (
 	commentHeaderPattern = regexp.MustCompile(`(?i)^\[COMMENT(?:\s+[^\]]+)?\]`)
 	triggerPattern       = regexp.MustCompile(`(?i)^\s*ON\s*=\s*@?.+`)
 
+	refPatterns = []refPattern{
+		{re: regexp.MustCompile(`(?i)\bi_[a-z0-9_]+\b`), defTypes: []string{"ITEMDEF"}},
+		{re: regexp.MustCompile(`(?i)\bc_[a-z0-9_]+\b`), defTypes: []string{"CHARDEF"}},
+		{re: regexp.MustCompile(`(?i)\bt_[a-z0-9_]+\b`), defTypes: []string{"TYPEDEF"}},
+		{re: regexp.MustCompile(`(?i)\bs_[a-z0-9_]+\b`), defTypes: []string{"SPELL"}},
+		{re: regexp.MustCompile(`(?i)\br_[a-z0-9_]+\b`), defTypes: []string{"REGIONTYPE", "AREADEF"}},
+		{re: regexp.MustCompile(`(?i)\be_[a-z0-9_]+\b`), defTypes: []string{"EVENTS"}},
+		{re: regexp.MustCompile(`(?i)\bm_[a-z0-9_]+\b`), defTypes: []string{"MENU"}},
+		{re: regexp.MustCompile(`(?i)\bd_[a-z0-9_]+\b`), defTypes: []string{"DIALOG"}},
+		{re: regexp.MustCompile(`(?i)\bf_[a-z0-9_]+\b`), defTypes: []string{"FUNCTION"}},
+	}
+
+	trackDefTypes = map[string]bool{
+		"ITEMDEF":    true,
+		"CHARDEF":    true,
+		"EVENTS":     true,
+		"FUNCTION":   true,
+		"REGIONTYPE": true,
+		"AREADEF":    true,
+		"DIALOG":     true,
+		"MENU":       true,
+		"ROOMDEF":    true,
+		"SKILL":      true,
+		"SKILLCLASS": true,
+		"SKILLMENU":  true,
+		"SPAWN":      true,
+		"SPELL":      true,
+		"TYPEDEF":    true,
+	}
+
 	textKeywords = map[string]bool{
 		"SAY": true, "SYSMESSAGE": true, "MESSAGE": true, "EMOTE": true, "SAYU": true, "SAYUA": true,
 		"TITLE": true, "NAME": true, "DESC": true, "PROMPTCONSOLE": true, "BARK": true, "GROUP": true,
 		"EVENTS": true, "FLAGS": true, "RECT": true, "P": true, "AUTHOR": true, "PAGES": true,
 	}
 
-	bracketPairs = map[rune]rune{')': '(', ']': '[', '}': '{'}
+	bracketPairs = map[rune]rune{')': '(', ']': '[', '}': '{', '>': '<'}
 
 	missingArgMessages = map[string]string{
 		"WHILE":    "LOGIC: WHILE missing condition.",
@@ -86,11 +128,13 @@ var (
 )
 
 func main() {
-	defs := make(map[string]defLocation)
+	defIndex := make(map[string]defLocation)
+	defnameIndex := make(map[string]defLocation)
+	var references []idReference
 	var allErrors []lintError
 
 	totalFiles := 0
-	filesWithErrors := 0
+	filesWithErrorsSet := make(map[string]bool)
 
 	fmt.Println("=== SPHERE SCP LINT (Go Action) ===")
 
@@ -110,9 +154,11 @@ func main() {
 		}
 		totalFiles++
 
-		fileErrors := lintFile(path, defs)
+		fileErrors := lintSCPFile(path, defIndex, defnameIndex, &references)
 		if len(fileErrors) > 0 {
-			filesWithErrors++
+			for _, e := range fileErrors {
+				filesWithErrorsSet[e.file] = true
+			}
 			allErrors = append(allErrors, fileErrors...)
 		}
 		return nil
@@ -121,13 +167,21 @@ func main() {
 		allErrors = append(allErrors, lintError{file: scriptsDir, line: 1, kind: "CRITICAL", msg: err.Error()})
 	}
 
+	undefErrors := validateUndefinedReferences(references, defIndex, defnameIndex)
+	if len(undefErrors) > 0 {
+		for _, e := range undefErrors {
+			filesWithErrorsSet[e.file] = true
+		}
+		allErrors = append(allErrors, undefErrors...)
+	}
+
 	for _, e := range allErrors {
 		printError(e)
 	}
 
 	fmt.Println("---------------------------------------------")
 	fmt.Printf("Files scanned: %d\n", totalFiles)
-	fmt.Printf("Files with errors: %d\n", filesWithErrors)
+	fmt.Printf("Files with errors: %d\n", len(filesWithErrorsSet))
 	fmt.Printf("Total errors: %d\n", len(allErrors))
 
 	if len(allErrors) > 0 {
@@ -135,10 +189,11 @@ func main() {
 	}
 }
 
-func lintFile(path string, defs map[string]defLocation) []lintError {
+func lintSCPFile(path string, defIndex map[string]defLocation, defnameIndex map[string]defLocation, references *[]idReference) []lintError {
 	var errors []lintError
 	var stack []blockState
 	inTextBlock := false
+	currentSection := ""
 
 	rel := toRelative(path)
 
@@ -175,12 +230,13 @@ func lintFile(path string, defs map[string]defLocation) []lintError {
 			errors = appendUnclosedStackErrors(errors, stack, rel, lineNum, " before new section.", false)
 			defType := strings.ToUpper(defMatch[1])
 			defArgs := strings.TrimSpace(defMatch[2])
+			currentSection = defType
 			if defType == "BOOK" || defType == "COMMENT" {
 				inTextBlock = true
 			} else {
 				inTextBlock = false
 			}
-			if defType == "ITEMDEF" || defType == "CHARDEF" || defType == "EVENTS" || defType == "FUNCTION" || defType == "REGIONTYPE" || defType == "AREADEF" || defType == "DIALOG" || defType == "MENU" || defType == "ROOMDEF" || defType == "SKILL" || defType == "SKILLCLASS" || defType == "SKILLMENU" || defType == "SPAWN" || defType == "SPELL" || defType == "TYPEDEF" {
+			if trackDefTypes[defType] {
 				fields := strings.Fields(defArgs)
 				id := ""
 				if len(fields) > 0 {
@@ -194,7 +250,7 @@ func lintFile(path string, defs map[string]defLocation) []lintError {
 							key = key + " " + subType
 						}
 					}
-					if prev, ok := defs[key]; ok {
+					if prev, ok := defIndex[key]; ok {
 						errors = append(errors, lintError{
 							file: rel,
 							line: lineNum,
@@ -202,7 +258,7 @@ func lintFile(path string, defs map[string]defLocation) []lintError {
 							msg:  fmt.Sprintf("DUPLICATE: '%s' already defined at %s:%d.", key, prev.file, prev.line),
 						})
 					} else {
-						defs[key] = defLocation{file: rel, line: lineNum}
+						defIndex[key] = defLocation{file: rel, line: lineNum}
 					}
 				}
 			}
@@ -212,6 +268,7 @@ func lintFile(path string, defs map[string]defLocation) []lintError {
 
 		if triggerPattern.MatchString(cleaned) {
 			inTextBlock = false
+			currentSection = ""
 			errors = appendUnclosedStackErrors(errors, stack, rel, lineNum, " before new trigger.", false)
 			stack = nil
 			continue
@@ -219,6 +276,24 @@ func lintFile(path string, defs map[string]defLocation) []lintError {
 
 		if inTextBlock {
 			continue
+		}
+
+		if currentSection == "DEFNAME" {
+			fields := strings.Fields(cleaned)
+			if len(fields) > 0 {
+				recordDefname(defnameIndex, fields[0], rel, lineNum)
+			}
+		}
+
+		if currentSection == "ITEMDEF" || currentSection == "CHARDEF" {
+			if name := parseDefnameValue(cleaned); name != "" {
+				upperName := strings.ToUpper(name)
+				recordDefname(defnameIndex, upperName, rel, lineNum)
+				key := currentSection + " " + upperName
+				if _, ok := defIndex[key]; !ok {
+					defIndex[key] = defLocation{file: rel, line: lineNum}
+				}
+			}
 		}
 
 		token := firstToken(cleaned)
@@ -292,6 +367,10 @@ func lintFile(path string, defs map[string]defLocation) []lintError {
 				}
 			}
 		}
+
+		if !isTextLine && !isWriteFile {
+			collectIDReferences(cleaned, rel, lineNum, references)
+		}
 	}
 
 	if scanErr := scanner.Err(); scanErr != nil {
@@ -356,9 +435,9 @@ func checkBrackets(line string) string {
 	stack := make([]rune, 0, 8)
 	for _, ch := range line {
 		switch ch {
-		case '(', '[', '{':
+		case '(', '[', '{', '<':
 			stack = append(stack, ch)
-		case ')', ']', '}':
+		case ')', ']', '}', '>':
 			if len(stack) == 0 {
 				return fmt.Sprintf("unexpected closing '%c'", ch)
 			}
@@ -493,4 +572,81 @@ func isTextKeyword(token string) bool {
 		token = token[lastDot+1:]
 	}
 	return textKeywords[strings.ToUpper(token)]
+}
+
+func collectIDReferences(line, file string, lineNum int, references *[]idReference) {
+	for _, pattern := range refPatterns {
+		matches := pattern.re.FindAllString(line, -1)
+		for _, match := range matches {
+			*references = append(*references, idReference{
+				file:     file,
+				line:     lineNum,
+				defTypes: pattern.defTypes,
+				id:       strings.ToUpper(match),
+			})
+		}
+	}
+}
+
+func validateUndefinedReferences(references []idReference, defIndex map[string]defLocation, defnameIndex map[string]defLocation) []lintError {
+	if len(references) == 0 {
+		return nil
+	}
+	var errors []lintError
+	seen := make(map[string]bool)
+	for _, ref := range references {
+		if _, ok := defnameIndex[ref.id]; ok {
+			continue
+		}
+		found := false
+		for _, defType := range ref.defTypes {
+			key := defType + " " + ref.id
+			if _, ok := defIndex[key]; ok {
+				found = true
+				break
+			}
+		}
+		if found {
+			continue
+		}
+		typeLabel := strings.Join(ref.defTypes, "/")
+		errKey := ref.file + ":" + fmt.Sprintf("%d", ref.line) + ":" + ref.id + ":" + typeLabel
+		if seen[errKey] {
+			continue
+		}
+		seen[errKey] = true
+		errors = append(errors, lintError{
+			file: ref.file,
+			line: ref.line,
+			kind: "UNDECLARED",
+			msg:  fmt.Sprintf("UNDECLARED: '%s' not defined as %s or DEFNAME.", ref.id, typeLabel),
+		})
+	}
+	return errors
+}
+
+func parseDefnameValue(line string) string {
+	if !hasPrefixFold(line, "DEFNAME=") {
+		return ""
+	}
+	value := strings.TrimSpace(line[len("DEFNAME="):])
+	if value == "" {
+		return ""
+	}
+	fields := strings.Fields(value)
+	if len(fields) == 0 {
+		return ""
+	}
+	return fields[0]
+}
+
+func recordDefname(defnameIndex map[string]defLocation, name, file string, lineNum int) {
+	upper := strings.ToUpper(name)
+	if upper == "" {
+		return
+	}
+	if _, ok := defnameIndex[upper]; ok {
+		return
+	}
+	defnameIndex[upper] = defLocation{file: file, line: lineNum}
 }

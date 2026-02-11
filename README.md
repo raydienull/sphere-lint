@@ -7,8 +7,10 @@ Linter for SphereServer .scp scripts. Runs as a GitHub Action and reports errors
 - Missing [EOF] at the end of a file
 - Duplicate ITEMDEF, CHARDEF, EVENTS, FUNCTION, REGIONTYPE, AREADEF, DIALOG, MENU, ROOMDEF, SKILL, SKILLCLASS, SKILLMENU, SPAWN, SPELL, and TYPEDEF
 - Unbalanced blocks (IF/ELSE/ENDIF, FOR/ENDFOR, WHILE/ENDWHILE, BEGIN/END, DO*/ENDDO)
-- Common typos and bracket errors
+- Common typos and bracket errors (including < >)
 - FOR, WHILE, and DORAND rules without arguments
+- Undeclared references for common prefixes: i_ (ITEMDEF), c_ (CHARDEF), t_ (TYPEDEF), s_ (SPELL), r_ (REGIONTYPE/AREADEF), e_ (EVENTS), m_ (MENU), d_ (DIALOG), f_ (FUNCTION)
+- DEFNAME values declared inside ITEMDEF/CHARDEF are treated as declared IDs
 
 ## Use
 
