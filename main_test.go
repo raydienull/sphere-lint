@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -280,17 +281,25 @@ func TestLintAngleBracketComparison(t *testing.T) {
 }
 
 func TestLintEvalAngleExpressionComparison(t *testing.T) {
-	content := strings.Join([]string{
-		"[ITEMDEF i_test]",
+	lines := []string{
 		"SRC.ACT.MOREY=<EVAL ((<SRC.KILLS> >= 3) || (<SRC.KARMA> < -1000) || (<SRC.FLAGS>&002000000))>",
-		"[EOF]",
-		"",
-	}, "\n")
+		"VAR.TEST=<EVAL (<MOREY> > <MOREX>)>",
+		"VAR.TEST=<EVAL (<MOREY> <= <MOREX>)>",
+	}
 
-	errs := lintFromContent(t, "eval_angle_expr.scp", content)
+	for i, line := range lines {
+		content := strings.Join([]string{
+			"[ITEMDEF i_test]",
+			line,
+			"[EOF]",
+			"",
+		}, "\n")
 
-	if len(errs) != 0 {
-		t.Fatalf("expected no errors, got %d", len(errs))
+		errs := lintFromContent(t, fmt.Sprintf("eval_angle_expr_%d.scp", i), content)
+
+		if len(errs) != 0 {
+			t.Fatalf("expected no errors for case %d, got %d", i, len(errs))
+		}
 	}
 }
 
