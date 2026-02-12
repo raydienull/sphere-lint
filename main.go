@@ -9,34 +9,34 @@ import (
 	"strings"
 )
 
-type lintError struct {
+type lintIssue struct {
 	file string
 	line int
 	kind string
 	msg  string
 }
 
-type defLocation struct {
+type definitionLocation struct {
 	file string
 	line int
 }
 
-type idReference struct {
+type referenceUse struct {
 	file     string
 	line     int
 	defTypes []string
 	id       string
 }
 
-type refPattern struct {
+type referencePattern struct {
 	re       *regexp.Regexp
 	defTypes []string
 }
 
 var (
-	scriptsDir = "."
-	extensions = []string{".scp"}
-	ignoreDirs = map[string]bool{
+	scriptsRoot      = "."
+	scriptExtensions = []string{".scp"}
+	ignoredDirs      = map[string]bool{
 		".git":    true,
 		"backups": true,
 		"backup":  true,
@@ -48,7 +48,7 @@ var (
 	commentHeaderPattern = regexp.MustCompile(`(?i)^\[COMMENT(?:\s+[^\]]+)?\]`)
 	triggerPattern       = regexp.MustCompile(`(?i)^\s*ON\s*=\s*@?.+`)
 
-	refPatterns = []refPattern{
+	refPatterns = []referencePattern{
 		{re: regexp.MustCompile(`(?i)\bi_[a-z0-9_]+\b`), defTypes: []string{"ITEMDEF"}},
 		{re: regexp.MustCompile(`(?i)\bc_[a-z0-9_]+\b`), defTypes: []string{"CHARDEF"}},
 		{re: regexp.MustCompile(`(?i)\bspawn_[a-z0-9_]+\b`), defTypes: []string{"SPAWN"}},
@@ -129,70 +129,70 @@ var (
 )
 
 func main() {
-	defIndex := make(map[string]defLocation)
-	defnameIndex := make(map[string]defLocation)
-	idIndex := make(map[string]defLocation)
-	var references []idReference
-	var allErrors []lintError
+	defLocations := make(map[string]definitionLocation)
+	defnameLocations := make(map[string]definitionLocation)
+	idLocations := make(map[string]definitionLocation)
+	var refUses []referenceUse
+	var issues []lintIssue
 
-	totalFiles := 0
-	filesWithErrorsSet := make(map[string]bool)
+	scannedFiles := 0
+	filesWithIssues := make(map[string]bool)
 
 	fmt.Println("=== SPHERE SCP LINT (Go Action) ===")
 
-	err := filepath.WalkDir(scriptsDir, func(path string, d os.DirEntry, walkErr error) error {
+	err := filepath.WalkDir(scriptsRoot, func(path string, d os.DirEntry, walkErr error) error {
 		if walkErr != nil {
-			allErrors = append(allErrors, lintError{file: path, line: 1, kind: "CRITICAL", msg: walkErr.Error()})
+			issues = append(issues, lintIssue{file: path, line: 1, kind: "CRITICAL", msg: walkErr.Error()})
 			return nil
 		}
 		if d.IsDir() {
-			if ignoreDirs[d.Name()] {
+			if ignoredDirs[d.Name()] {
 				return filepath.SkipDir
 			}
 			return nil
 		}
-		if !hasExtension(path, extensions) {
+		if !hasExtension(path, scriptExtensions) {
 			return nil
 		}
-		totalFiles++
+		scannedFiles++
 
-		fileErrors := lintSCPFile(path, defIndex, defnameIndex, idIndex, &references)
-		if len(fileErrors) > 0 {
-			for _, e := range fileErrors {
-				filesWithErrorsSet[e.file] = true
+		fileIssues := lintScriptFile(path, defLocations, defnameLocations, idLocations, &refUses)
+		if len(fileIssues) > 0 {
+			for _, issue := range fileIssues {
+				filesWithIssues[issue.file] = true
 			}
-			allErrors = append(allErrors, fileErrors...)
+			issues = append(issues, fileIssues...)
 		}
 		return nil
 	})
 	if err != nil {
-		allErrors = append(allErrors, lintError{file: scriptsDir, line: 1, kind: "CRITICAL", msg: err.Error()})
+		issues = append(issues, lintIssue{file: scriptsRoot, line: 1, kind: "CRITICAL", msg: err.Error()})
 	}
 
-	undefErrors := validateUndefinedReferences(references, defIndex, defnameIndex, idIndex)
-	if len(undefErrors) > 0 {
-		for _, e := range undefErrors {
-			filesWithErrorsSet[e.file] = true
+	undefinedIssues := findUndefinedReferences(refUses, defLocations, defnameLocations, idLocations)
+	if len(undefinedIssues) > 0 {
+		for _, issue := range undefinedIssues {
+			filesWithIssues[issue.file] = true
 		}
-		allErrors = append(allErrors, undefErrors...)
+		issues = append(issues, undefinedIssues...)
 	}
 
-	for _, e := range allErrors {
-		printError(e)
+	for _, issue := range issues {
+		printError(issue)
 	}
 
 	fmt.Println("---------------------------------------------")
-	fmt.Printf("Files scanned: %d\n", totalFiles)
-	fmt.Printf("Files with errors: %d\n", len(filesWithErrorsSet))
-	fmt.Printf("Total errors: %d\n", len(allErrors))
+	fmt.Printf("Files scanned: %d\n", scannedFiles)
+	fmt.Printf("Files with errors: %d\n", len(filesWithIssues))
+	fmt.Printf("Total errors: %d\n", len(issues))
 
-	if len(allErrors) > 0 {
+	if len(issues) > 0 {
 		os.Exit(1)
 	}
 }
 
-func lintSCPFile(path string, defIndex map[string]defLocation, defnameIndex map[string]defLocation, idIndex map[string]defLocation, references *[]idReference) []lintError {
-	var errors []lintError
+func lintScriptFile(path string, defIndex map[string]definitionLocation, defnameIndex map[string]definitionLocation, idIndex map[string]definitionLocation, references *[]referenceUse) []lintIssue {
+	var issues []lintIssue
 	var stack []blockState
 	inTextBlock := false
 	currentSection := ""
@@ -201,7 +201,7 @@ func lintSCPFile(path string, defIndex map[string]defLocation, defnameIndex map[
 
 	file, err := os.Open(path)
 	if err != nil {
-		return []lintError{{file: rel, line: 1, kind: "CRITICAL", msg: err.Error()}}
+		return []lintIssue{{file: rel, line: 1, kind: "CRITICAL", msg: err.Error()}}
 	}
 	defer file.Close()
 
@@ -222,14 +222,14 @@ func lintSCPFile(path string, defIndex map[string]defLocation, defnameIndex map[
 		}
 
 		if commentHeaderPattern.MatchString(cleaned) {
-			errors = appendUnclosedStackErrors(errors, stack, rel, lineNum, " before new section.", false)
+			issues = appendUnclosedStackErrors(issues, stack, rel, lineNum, " before new section.", false)
 			inTextBlock = true
 			stack = nil
 			continue
 		}
 
 		if defMatch := defHeaderPattern.FindStringSubmatch(cleaned); len(defMatch) == 3 {
-			errors = appendUnclosedStackErrors(errors, stack, rel, lineNum, " before new section.", false)
+			issues = appendUnclosedStackErrors(issues, stack, rel, lineNum, " before new section.", false)
 			defType := strings.ToUpper(defMatch[1])
 			defArgs := strings.TrimSpace(defMatch[2])
 			currentSection = defType
@@ -245,7 +245,7 @@ func lintSCPFile(path string, defIndex map[string]defLocation, defnameIndex map[
 					id = strings.ToUpper(fields[0])
 				}
 				if id != "" {
-					recordID(idIndex, id, rel, lineNum)
+					recordIdentifier(idIndex, id, rel, lineNum)
 					key := defType + " " + id
 					if defType == "DIALOG" && len(fields) > 1 {
 						subType := strings.ToUpper(fields[1])
@@ -254,14 +254,14 @@ func lintSCPFile(path string, defIndex map[string]defLocation, defnameIndex map[
 						}
 					}
 					if prev, ok := defIndex[key]; ok {
-						errors = append(errors, lintError{
+						issues = append(issues, lintIssue{
 							file: rel,
 							line: lineNum,
 							kind: "DUPLICATE",
 							msg:  fmt.Sprintf("DUPLICATE: '%s' already defined at %s:%d.", key, prev.file, prev.line),
 						})
 					} else {
-						defIndex[key] = defLocation{file: rel, line: lineNum}
+						defIndex[key] = definitionLocation{file: rel, line: lineNum}
 					}
 				}
 			}
@@ -272,7 +272,7 @@ func lintSCPFile(path string, defIndex map[string]defLocation, defnameIndex map[
 		if triggerPattern.MatchString(cleaned) {
 			inTextBlock = false
 			currentSection = ""
-			errors = appendUnclosedStackErrors(errors, stack, rel, lineNum, " before new trigger.", false)
+			issues = appendUnclosedStackErrors(issues, stack, rel, lineNum, " before new trigger.", false)
 			stack = nil
 			continue
 		}
@@ -281,20 +281,20 @@ func lintSCPFile(path string, defIndex map[string]defLocation, defnameIndex map[
 			continue
 		}
 
-		if currentSection == "DEFNAME" {
+		if isDefnameSection(currentSection) {
 			fields := strings.Fields(cleaned)
 			if len(fields) > 0 {
-				recordDefname(defnameIndex, fields[0], rel, lineNum)
+				recordDefName(defnameIndex, fields[0], rel, lineNum)
 			}
 		}
 
-		if currentSection == "ITEMDEF" || currentSection == "CHARDEF" {
-			if name := parseDefnameValue(cleaned); name != "" {
-				upperName := strings.ToUpper(name)
-				recordDefname(defnameIndex, upperName, rel, lineNum)
+		if name := parseDefnameAssignment(cleaned); name != "" {
+			upperName := strings.ToUpper(name)
+			recordDefName(defnameIndex, upperName, rel, lineNum)
+			if currentSection == "ITEMDEF" || currentSection == "CHARDEF" {
 				key := currentSection + " " + upperName
 				if _, ok := defIndex[key]; !ok {
-					defIndex[key] = defLocation{file: rel, line: lineNum}
+					defIndex[key] = definitionLocation{file: rel, line: lineNum}
 				}
 			}
 		}
@@ -308,50 +308,50 @@ func lintSCPFile(path string, defIndex map[string]defLocation, defnameIndex map[
 
 		if !isTextLine && !isWriteFile {
 			if bracketErr := checkBrackets(cleaned); bracketErr != "" {
-				errors = appendError(errors, rel, lineNum, "SYNTAX", "SYNTAX: brackets -> "+bracketErr)
+				issues = appendError(issues, rel, lineNum, "SYNTAX", "SYNTAX: brackets -> "+bracketErr)
 			}
 		}
 
 		if !isTextLine && !isAssignment {
 			if upperToken == "DORAN" {
-				errors = appendError(errors, rel, lineNum, "TYPO", "TYPO: 'DORAN' found. Did you mean 'DORAND'?")
+				issues = appendError(issues, rel, lineNum, "TYPO", "TYPO: 'DORAN' found. Did you mean 'DORAND'?")
 			}
 			if upperToken == "EN" {
-				errors = appendError(errors, rel, lineNum, "TYPO", "TYPO: 'EN' found. Did you mean 'ENDO', 'ENDDO', or 'ENDIF'?")
+				issues = appendError(issues, rel, lineNum, "TYPO", "TYPO: 'EN' found. Did you mean 'ENDO', 'ENDDO', or 'ENDIF'?")
 			}
 			if upperToken == "IF" && strings.TrimSpace(cleaned) == "IF" {
-				errors = appendError(errors, rel, lineNum, "LOGIC", "LOGIC: empty 'IF' statement.")
+				issues = appendError(issues, rel, lineNum, "LOGIC", "LOGIC: empty 'IF' statement.")
 			}
 			if upperToken == "ELSEIF" && strings.TrimSpace(cleaned) == "ELSEIF" {
-				errors = appendError(errors, rel, lineNum, "LOGIC", "LOGIC: empty 'ELSEIF' statement.")
+				issues = appendError(issues, rel, lineNum, "LOGIC", "LOGIC: empty 'ELSEIF' statement.")
 			}
 			if upperToken == "ELIF" && strings.TrimSpace(cleaned) == "ELIF" {
-				errors = appendError(errors, rel, lineNum, "LOGIC", "LOGIC: empty 'ELIF' statement.")
+				issues = appendError(issues, rel, lineNum, "LOGIC", "LOGIC: empty 'ELIF' statement.")
 			}
 			trimmed := strings.TrimSpace(cleaned)
 			if strings.HasPrefix(trimmed, "[EOF]") && trimmed != "[EOF]" {
-				errors = appendError(errors, rel, lineNum, "CRITICAL", "CRITICAL: text found after [EOF].")
+				issues = appendError(issues, rel, lineNum, "CRITICAL", "CRITICAL: text found after [EOF].")
 			}
 
 			if upperToken != "" {
 				fieldCount := countFields(cleaned, 2)
 				if fieldCount < 2 {
 					if msg, ok := missingArgMessages[upperToken]; ok {
-						errors = appendError(errors, rel, lineNum, "LOGIC", msg)
+						issues = appendError(issues, rel, lineNum, "LOGIC", msg)
 					} else if forArgTokens[upperToken] {
-						errors = appendError(errors, rel, lineNum, "LOGIC", fmt.Sprintf("LOGIC: %s missing argument.", upperToken))
+						issues = appendError(issues, rel, lineNum, "LOGIC", fmt.Sprintf("LOGIC: %s missing argument.", upperToken))
 					}
 				}
 
 				if endToken := normalizeEndToken(upperToken); endToken != "" {
 					if len(stack) == 0 {
-						errors = appendError(errors, rel, lineNum, "BLOCK", fmt.Sprintf("BLOCK: '%s' without opening block.", upperToken))
+						issues = appendError(issues, rel, lineNum, "BLOCK", fmt.Sprintf("BLOCK: '%s' without opening block.", upperToken))
 					} else {
 						last := stack[len(stack)-1]
 						stack = stack[:len(stack)-1]
 						expected := blockStartToEnd[last.typ]
 						if endToken != expected {
-							errors = appendError(errors, rel, lineNum, "BLOCK", fmt.Sprintf("BLOCK: mismatch. '%s' closed by '%s' (expected %s).", last.typ, upperToken, expected))
+							issues = appendError(issues, rel, lineNum, "BLOCK", fmt.Sprintf("BLOCK: mismatch. '%s' closed by '%s' (expected %s).", last.typ, upperToken, expected))
 						}
 					}
 					continue
@@ -359,7 +359,7 @@ func lintSCPFile(path string, defIndex map[string]defLocation, defnameIndex map[
 
 				if upperToken == "ELSE" || upperToken == "ELIF" || upperToken == "ELSEIF" {
 					if len(stack) == 0 || stack[len(stack)-1].typ != "IF" {
-						errors = appendError(errors, rel, lineNum, "BLOCK", fmt.Sprintf("BLOCK: '%s' without matching IF.", upperToken))
+						issues = appendError(issues, rel, lineNum, "BLOCK", fmt.Sprintf("BLOCK: '%s' without matching IF.", upperToken))
 					}
 					continue
 				}
@@ -372,26 +372,28 @@ func lintSCPFile(path string, defIndex map[string]defLocation, defnameIndex map[
 		}
 
 		if !isTextLine && !isWriteFile {
-			collectIDReferences(cleaned, rel, lineNum, references)
+			if !isAliasSection(currentSection) {
+				collectReferenceUses(cleaned, rel, lineNum, references)
+			}
 		}
 	}
 
 	if scanErr := scanner.Err(); scanErr != nil {
-		errors = appendError(errors, rel, lineNum, "CRITICAL", scanErr.Error())
+		issues = appendError(issues, rel, lineNum, "CRITICAL", scanErr.Error())
 	}
 
 	if strings.ToUpper(strings.TrimSpace(lastNonEmpty)) != "[EOF]" {
 		if lineNum == 0 {
 			lineNum = 1
 		}
-		errors = appendError(errors, rel, lineNum, "CRITICAL", "CRITICAL: missing [EOF] at end of file.")
+		issues = appendError(issues, rel, lineNum, "CRITICAL", "CRITICAL: missing [EOF] at end of file.")
 	}
 
 	if len(stack) > 0 {
-		errors = appendUnclosedStackErrors(errors, stack, rel, lineNum, ".", true)
+		issues = appendUnclosedStackErrors(issues, stack, rel, lineNum, ".", true)
 	}
 
-	return errors
+	return issues
 }
 
 type blockState struct {
@@ -443,7 +445,7 @@ func checkBrackets(line string) string {
 			stack = append(stack, rune(ch))
 		case '<':
 			if i+1 < len(line) && isAngleTokenStart(line[i+1]) {
-				end, ok := scanAngleToken(line, i+1)
+				end, ok := scanAngleExpression(line, i+1)
 				if !ok {
 					return "unclosed '<'"
 				}
@@ -474,14 +476,23 @@ func checkBrackets(line string) string {
 	return ""
 }
 
-func scanAngleToken(line string, start int) (int, bool) {
+func scanAngleExpression(line string, start int) (int, bool) {
+	depth := 1
 	for i := start; i < len(line); i++ {
-		ch := line[i]
-		if !isAngleTokenChar(ch) {
-			if ch == '>' {
+		switch line[i] {
+		case '<':
+			if i+1 < len(line) && isAngleTokenStart(line[i+1]) {
+				depth++
+			}
+		case '>':
+			depth--
+			if depth == 0 {
 				return i, true
 			}
-			return i, false
+		default:
+			if !isAngleTokenChar(line[i]) {
+				continue
+			}
 		}
 	}
 	return len(line), false
@@ -495,7 +506,7 @@ func isAngleTokenChar(b byte) bool {
 	return isAngleTokenStart(b) || (b >= '0' && b <= '9') || b == '.'
 }
 
-func printError(e lintError) {
+func printError(e lintIssue) {
 	if e.line <= 0 {
 		e.line = 1
 	}
@@ -528,7 +539,7 @@ func escapeAnnotation(msg string) string {
 }
 
 func toRelative(path string) string {
-	rel, err := filepath.Rel(scriptsDir, path)
+	rel, err := filepath.Rel(scriptsRoot, path)
 	if err != nil {
 		return path
 	}
@@ -538,7 +549,7 @@ func toRelative(path string) string {
 	return filepath.ToSlash(rel)
 }
 
-func appendUnclosedStackErrors(errors []lintError, stack []blockState, rel string, lineNum int, msgSuffix string, useBlockLine bool) []lintError {
+func appendUnclosedStackErrors(errors []lintIssue, stack []blockState, rel string, lineNum int, msgSuffix string, useBlockLine bool) []lintIssue {
 	if len(stack) == 0 {
 		return errors
 	}
@@ -547,13 +558,13 @@ func appendUnclosedStackErrors(errors []lintError, stack []blockState, rel strin
 		if useBlockLine {
 			errLine = b.line
 		}
-		errors = append(errors, lintError{file: rel, line: errLine, kind: "BLOCK", msg: fmt.Sprintf("BLOCK: unclosed '%s' block%s", b.typ, msgSuffix)})
+		errors = append(errors, lintIssue{file: rel, line: errLine, kind: "BLOCK", msg: fmt.Sprintf("BLOCK: unclosed '%s' block%s", b.typ, msgSuffix)})
 	}
 	return errors
 }
 
-func appendError(errors []lintError, rel string, lineNum int, kind, msg string) []lintError {
-	return append(errors, lintError{file: rel, line: lineNum, kind: kind, msg: msg})
+func appendError(errors []lintIssue, rel string, lineNum int, kind, msg string) []lintIssue {
+	return append(errors, lintIssue{file: rel, line: lineNum, kind: kind, msg: msg})
 }
 
 func countFields(line string, max int) int {
@@ -611,11 +622,15 @@ func isTextKeyword(token string) bool {
 	return textKeywords[strings.ToUpper(token)]
 }
 
-func collectIDReferences(line, file string, lineNum int, references *[]idReference) {
+func collectReferenceUses(line, file string, lineNum int, references *[]referenceUse) {
 	for _, pattern := range refPatterns {
-		matches := pattern.re.FindAllString(line, -1)
-		for _, match := range matches {
-			*references = append(*references, idReference{
+		indices := pattern.re.FindAllStringIndex(line, -1)
+		for _, idx := range indices {
+			match := line[idx[0]:idx[1]]
+			if shouldSkipDynamicID(line, idx[1], match) {
+				continue
+			}
+			*references = append(*references, referenceUse{
 				file:     file,
 				line:     lineNum,
 				defTypes: pattern.defTypes,
@@ -625,11 +640,21 @@ func collectIDReferences(line, file string, lineNum int, references *[]idReferen
 	}
 }
 
-func validateUndefinedReferences(references []idReference, defIndex map[string]defLocation, defnameIndex map[string]defLocation, idIndex map[string]defLocation) []lintError {
+func shouldSkipDynamicID(line string, end int, match string) bool {
+	if end >= len(line) || line[end] != '<' {
+		return false
+	}
+	if len(match) == 0 || match[len(match)-1] != '_' {
+		return false
+	}
+	return true
+}
+
+func findUndefinedReferences(references []referenceUse, defIndex map[string]definitionLocation, defnameIndex map[string]definitionLocation, idIndex map[string]definitionLocation) []lintIssue {
 	if len(references) == 0 {
 		return nil
 	}
-	var errors []lintError
+	var errors []lintIssue
 	seen := make(map[string]bool)
 	for _, ref := range references {
 		if _, ok := defnameIndex[ref.id]; ok {
@@ -655,7 +680,7 @@ func validateUndefinedReferences(references []idReference, defIndex map[string]d
 			continue
 		}
 		seen[errKey] = true
-		errors = append(errors, lintError{
+		errors = append(errors, lintIssue{
 			file: ref.file,
 			line: ref.line,
 			kind: "UNDECLARED",
@@ -665,7 +690,7 @@ func validateUndefinedReferences(references []idReference, defIndex map[string]d
 	return errors
 }
 
-func parseDefnameValue(line string) string {
+func parseDefnameAssignment(line string) string {
 	if !hasPrefixFold(line, "DEFNAME=") {
 		return ""
 	}
@@ -680,7 +705,7 @@ func parseDefnameValue(line string) string {
 	return fields[0]
 }
 
-func recordDefname(defnameIndex map[string]defLocation, name, file string, lineNum int) {
+func recordDefName(defnameIndex map[string]definitionLocation, name, file string, lineNum int) {
 	upper := strings.ToUpper(name)
 	if upper == "" {
 		return
@@ -688,10 +713,10 @@ func recordDefname(defnameIndex map[string]defLocation, name, file string, lineN
 	if _, ok := defnameIndex[upper]; ok {
 		return
 	}
-	defnameIndex[upper] = defLocation{file: file, line: lineNum}
+	defnameIndex[upper] = definitionLocation{file: file, line: lineNum}
 }
 
-func recordID(idIndex map[string]defLocation, name, file string, lineNum int) {
+func recordIdentifier(idIndex map[string]definitionLocation, name, file string, lineNum int) {
 	upper := strings.ToUpper(name)
 	if upper == "" {
 		return
@@ -699,5 +724,13 @@ func recordID(idIndex map[string]defLocation, name, file string, lineNum int) {
 	if _, ok := idIndex[upper]; ok {
 		return
 	}
-	idIndex[upper] = defLocation{file: file, line: lineNum}
+	idIndex[upper] = definitionLocation{file: file, line: lineNum}
+}
+
+func isAliasSection(section string) bool {
+	return section == "RESDEFNAME" || section == "RES_RESDEFNAME"
+}
+
+func isDefnameSection(section string) bool {
+	return section == "DEFNAME" || isAliasSection(section)
 }

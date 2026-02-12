@@ -133,6 +133,38 @@ func TestLintReferenceMatchesAnyDefID(t *testing.T) {
 	}
 }
 
+func TestLintDefnameInsideMultidef(t *testing.T) {
+	content := strings.Join([]string{
+		"[MULTIDEF 01431]",
+		"DEFNAME=m_foundation_12x16",
+		"[DEFNAME menus_test]",
+		"random_menu { m_foundation_12x16 1 }",
+		"[EOF]",
+		"",
+	}, "\n")
+
+	errs := lintFromContent(t, "defname_inside_multidef.scp", content)
+
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors, got %d", len(errs))
+	}
+}
+
+func TestLintDynamicFunctionReference(t *testing.T) {
+	content := strings.Join([]string{
+		"[FUNCTION f_test]",
+		"SERV.LOG <DEF.F_MULTIS_<SRC.CTAG0.ACCOUNTLANG>_MULTI_CENTER>",
+		"[EOF]",
+		"",
+	}, "\n")
+
+	errs := lintFromContent(t, "dynamic_function_ref.scp", content)
+
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors, got %d", len(errs))
+	}
+}
+
 func TestLintItemDefnameAssignment(t *testing.T) {
 	content := strings.Join([]string{
 		"[ITEMDEF 03709]",
@@ -144,6 +176,40 @@ func TestLintItemDefnameAssignment(t *testing.T) {
 	}, "\n")
 
 	errs := lintFromContent(t, "itemdef_defname.scp", content)
+
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors, got %d", len(errs))
+	}
+}
+
+func TestLintResDefnameAliasReference(t *testing.T) {
+	content := strings.Join([]string{
+		"[RESDEFNAME backward_compatibility_defs]",
+		"i_dragon_egg_lamp_s i_lamp_dragon_s",
+		"[DEFNAME items_test]",
+		"random_lamps { i_dragon_egg_lamp_s 1 }",
+		"[EOF]",
+		"",
+	}, "\n")
+
+	errs := lintFromContent(t, "resdefname_alias_ref.scp", content)
+
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors, got %d", len(errs))
+	}
+}
+
+func TestLintResResDefnameAliasReference(t *testing.T) {
+	content := strings.Join([]string{
+		"[RES_RESDEFNAME backward_compatibility_defs]",
+		"i_dragon_egg_lamp_s i_lamp_dragon_s",
+		"[DEFNAME items_test]",
+		"random_lamps { i_dragon_egg_lamp_s 1 }",
+		"[EOF]",
+		"",
+	}, "\n")
+
+	errs := lintFromContent(t, "res_resdefname_alias_ref.scp", content)
 
 	if len(errs) != 0 {
 		t.Fatalf("expected no errors, got %d", len(errs))
@@ -236,18 +302,18 @@ func TestLintDuplicateDefsAcrossFiles(t *testing.T) {
 	for _, defType := range defTypes {
 		defType := defType
 		t.Run(defType, func(t *testing.T) {
-			defIndex := map[string]defLocation{}
-			defnameIndex := map[string]defLocation{}
-			idIndex := map[string]defLocation{}
-			var references []idReference
+			defIndex := map[string]definitionLocation{}
+			defnameIndex := map[string]definitionLocation{}
+			idIndex := map[string]definitionLocation{}
+			var references []referenceUse
 			contentA := buildDefContent(defType, "dup")
 			contentB := buildDefContent(defType, "dup")
 
 			pathA := writeTempFile(t, dir, "dup_"+strings.ToLower(defType)+"_a.scp", contentA)
 			pathB := writeTempFile(t, dir, "dup_"+strings.ToLower(defType)+"_b.scp", contentB)
 
-			assertNoErrors(t, lintSCPFile(pathA, defIndex, defnameIndex, idIndex, &references), "first "+defType+" def")
-			assertHasMessage(t, lintSCPFile(pathB, defIndex, defnameIndex, idIndex, &references), "DUPLICATE: '"+defType+" DUP' already defined")
+			assertNoErrors(t, lintScriptFile(pathA, defIndex, defnameIndex, idIndex, &references), "first "+defType+" def")
+			assertHasMessage(t, lintScriptFile(pathB, defIndex, defnameIndex, idIndex, &references), "DUPLICATE: '"+defType+" DUP' already defined")
 		})
 	}
 }
@@ -270,17 +336,17 @@ func TestLintDialogDuplicateWithSections(t *testing.T) {
 	assertHasMessage(t, errs, "DUPLICATE: 'DIALOG DIALOG TEXT' already defined")
 }
 
-func lintFromContent(t *testing.T, name, content string) []lintError {
+func lintFromContent(t *testing.T, name, content string) []lintIssue {
 	t.Helper()
 	dir := withTempScriptsDir(t)
-	defIndex := map[string]defLocation{}
-	defnameIndex := map[string]defLocation{}
-	idIndex := map[string]defLocation{}
-	var references []idReference
+	defIndex := map[string]definitionLocation{}
+	defnameIndex := map[string]definitionLocation{}
+	idIndex := map[string]definitionLocation{}
+	var references []referenceUse
 
 	path := writeTempFile(t, dir, name, content)
-	errs := lintSCPFile(path, defIndex, defnameIndex, idIndex, &references)
-	errs = append(errs, validateUndefinedReferences(references, defIndex, defnameIndex, idIndex)...)
+	errs := lintScriptFile(path, defIndex, defnameIndex, idIndex, &references)
+	errs = append(errs, findUndefinedReferences(references, defIndex, defnameIndex, idIndex)...)
 	return errs
 }
 
@@ -304,13 +370,13 @@ func buildDefContent(defType, id string) string {
 func withTempScriptsDir(t *testing.T) string {
 	t.Helper()
 	dir := t.TempDir()
-	prevScriptsDir := scriptsDir
-	scriptsDir = dir
-	t.Cleanup(func() { scriptsDir = prevScriptsDir })
+	prevScriptsDir := scriptsRoot
+	scriptsRoot = dir
+	t.Cleanup(func() { scriptsRoot = prevScriptsDir })
 	return dir
 }
 
-func assertNoErrors(t *testing.T, errs []lintError, context string) {
+func assertNoErrors(t *testing.T, errs []lintIssue, context string) {
 	t.Helper()
 	if len(errs) == 0 {
 		return
@@ -322,7 +388,7 @@ func assertNoErrors(t *testing.T, errs []lintError, context string) {
 	t.Fatalf("expected no errors for %s, got %d: %s", context, len(errs), strings.Join(parts, " | "))
 }
 
-func assertHasMessage(t *testing.T, errs []lintError, needle string) {
+func assertHasMessage(t *testing.T, errs []lintIssue, needle string) {
 	t.Helper()
 	for _, e := range errs {
 		if strings.Contains(e.msg, needle) {

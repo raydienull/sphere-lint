@@ -11,7 +11,8 @@ Lint SphereServer .scp scripts locally or in CI. Reports errors with file/line a
 - FOR, WHILE, and DORAND rules without arguments
 - Undeclared references for common prefixes: i_ (ITEMDEF), c_ (CHARDEF), spawn_ (SPAWN), t_ (TYPEDEF), s_ (SPELL), r_ (REGIONTYPE/AREADEF), e_ (EVENTS), m_ (MENU), d_ (DIALOG), f_ (FUNCTION)
 - Any ID defined as ITEMDEF, CHARDEF, SPAWN, etc is considered declared for undeclared checks
-- DEFNAME values declared inside ITEMDEF/CHARDEF are treated as declared IDs
+- DEFNAME values declared inside sections (including MULTIDEF), plus RESDEFNAME/RES_RESDEFNAME alias keys, are treated as declared IDs
+- RESDEFNAME/RES_RESDEFNAME sections are treated as compatibility alias tables, so their mapped values are not validated as existing resources
 
 ## Quick Start (GitHub Actions)
 
