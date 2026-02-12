@@ -279,6 +279,21 @@ func TestLintAngleBracketComparison(t *testing.T) {
 	}
 }
 
+func TestLintEvalAngleExpressionComparison(t *testing.T) {
+	content := strings.Join([]string{
+		"[ITEMDEF i_test]",
+		"SRC.ACT.MOREY=<EVAL ((<SRC.KILLS> >= 3) || (<SRC.KARMA> < -1000) || (<SRC.FLAGS>&002000000))>",
+		"[EOF]",
+		"",
+	}, "\n")
+
+	errs := lintFromContent(t, "eval_angle_expr.scp", content)
+
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors, got %d", len(errs))
+	}
+}
+
 func TestLintDuplicateDefsAcrossFiles(t *testing.T) {
 	dir := withTempScriptsDir(t)
 	defTypes := []string{

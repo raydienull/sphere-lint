@@ -478,6 +478,7 @@ func checkBrackets(line string) string {
 
 func scanAngleExpression(line string, start int) (int, bool) {
 	depth := 1
+	parenDepth := 0
 	for i := start; i < len(line); i++ {
 		switch line[i] {
 		case '<':
@@ -485,17 +486,55 @@ func scanAngleExpression(line string, start int) (int, bool) {
 				depth++
 			}
 		case '>':
-			depth--
-			if depth == 0 {
-				return i, true
+			if depth > 1 {
+				depth--
+				if depth == 0 {
+					return i, true
+				}
+				continue
+			}
+			if isAngleCloseCandidate(line, i, parenDepth) {
+				depth--
+				if depth == 0 {
+					return i, true
+				}
 			}
 		default:
+			switch line[i] {
+			case '(':
+				parenDepth++
+			case ')':
+				if parenDepth > 0 {
+					parenDepth--
+				}
+			}
 			if !isAngleTokenChar(line[i]) {
 				continue
 			}
 		}
 	}
 	return len(line), false
+}
+
+func isAngleCloseCandidate(line string, index int, parenDepth int) bool {
+	if parenDepth > 0 {
+		return false
+	}
+	if index+1 < len(line) && line[index+1] == '=' {
+		return false
+	}
+	for i := index + 1; i < len(line); i++ {
+		if line[i] == ' ' || line[i] == '\t' {
+			continue
+		}
+		switch line[i] {
+		case ')', ']', '}', ',', ';':
+			return true
+		default:
+			return false
+		}
+	}
+	return true
 }
 
 func isAngleTokenStart(b byte) bool {
