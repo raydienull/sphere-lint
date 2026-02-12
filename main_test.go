@@ -104,6 +104,35 @@ func TestLintUndefinedItemRef(t *testing.T) {
 	assertHasMessage(t, errs, "UNDECLARED: 'I_MISSING_ITEM' not defined as ITEMDEF")
 }
 
+func TestLintUndefinedSpawnRef(t *testing.T) {
+	content := strings.Join([]string{
+		"[DEFNAME spawns_test]",
+		"random_spawn { spawn_missing_group 1 }",
+		"[EOF]",
+		"",
+	}, "\n")
+
+	errs := lintFromContent(t, "undefined_spawn_ref.scp", content)
+
+	assertHasMessage(t, errs, "UNDECLARED: 'SPAWN_MISSING_GROUP' not defined as SPAWN")
+}
+
+func TestLintReferenceMatchesAnyDefID(t *testing.T) {
+	content := strings.Join([]string{
+		"[SPAWN c_08301]",
+		"[DEFNAME spawns_test]",
+		"random_spawn { c_08301 1 }",
+		"[EOF]",
+		"",
+	}, "\n")
+
+	errs := lintFromContent(t, "reference_any_def_id.scp", content)
+
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors, got %d", len(errs))
+	}
+}
+
 func TestLintItemDefnameAssignment(t *testing.T) {
 	content := strings.Join([]string{
 		"[ITEMDEF 03709]",
@@ -168,6 +197,22 @@ func TestLintAngleBracketMismatch(t *testing.T) {
 	assertHasMessage(t, errs, "SYNTAX: brackets")
 }
 
+func TestLintAngleBracketComparison(t *testing.T) {
+	content := strings.Join([]string{
+		"[ITEMDEF i_test]",
+		"IF (<MOREY> > <MOREX>)",
+		"ENDIF",
+		"[EOF]",
+		"",
+	}, "\n")
+
+	errs := lintFromContent(t, "angle_bracket_comparison.scp", content)
+
+	if len(errs) != 0 {
+		t.Fatalf("expected no errors, got %d", len(errs))
+	}
+}
+
 func TestLintDuplicateDefsAcrossFiles(t *testing.T) {
 	dir := withTempScriptsDir(t)
 	defTypes := []string{
@@ -193,6 +238,7 @@ func TestLintDuplicateDefsAcrossFiles(t *testing.T) {
 		t.Run(defType, func(t *testing.T) {
 			defIndex := map[string]defLocation{}
 			defnameIndex := map[string]defLocation{}
+			idIndex := map[string]defLocation{}
 			var references []idReference
 			contentA := buildDefContent(defType, "dup")
 			contentB := buildDefContent(defType, "dup")
@@ -200,8 +246,8 @@ func TestLintDuplicateDefsAcrossFiles(t *testing.T) {
 			pathA := writeTempFile(t, dir, "dup_"+strings.ToLower(defType)+"_a.scp", contentA)
 			pathB := writeTempFile(t, dir, "dup_"+strings.ToLower(defType)+"_b.scp", contentB)
 
-			assertNoErrors(t, lintSCPFile(pathA, defIndex, defnameIndex, &references), "first "+defType+" def")
-			assertHasMessage(t, lintSCPFile(pathB, defIndex, defnameIndex, &references), "DUPLICATE: '"+defType+" DUP' already defined")
+			assertNoErrors(t, lintSCPFile(pathA, defIndex, defnameIndex, idIndex, &references), "first "+defType+" def")
+			assertHasMessage(t, lintSCPFile(pathB, defIndex, defnameIndex, idIndex, &references), "DUPLICATE: '"+defType+" DUP' already defined")
 		})
 	}
 }
@@ -229,11 +275,12 @@ func lintFromContent(t *testing.T, name, content string) []lintError {
 	dir := withTempScriptsDir(t)
 	defIndex := map[string]defLocation{}
 	defnameIndex := map[string]defLocation{}
+	idIndex := map[string]defLocation{}
 	var references []idReference
 
 	path := writeTempFile(t, dir, name, content)
-	errs := lintSCPFile(path, defIndex, defnameIndex, &references)
-	errs = append(errs, validateUndefinedReferences(references, defIndex, defnameIndex)...)
+	errs := lintSCPFile(path, defIndex, defnameIndex, idIndex, &references)
+	errs = append(errs, validateUndefinedReferences(references, defIndex, defnameIndex, idIndex)...)
 	return errs
 }
 

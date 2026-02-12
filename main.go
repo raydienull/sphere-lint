@@ -51,6 +51,7 @@ var (
 	refPatterns = []refPattern{
 		{re: regexp.MustCompile(`(?i)\bi_[a-z0-9_]+\b`), defTypes: []string{"ITEMDEF"}},
 		{re: regexp.MustCompile(`(?i)\bc_[a-z0-9_]+\b`), defTypes: []string{"CHARDEF"}},
+		{re: regexp.MustCompile(`(?i)\bspawn_[a-z0-9_]+\b`), defTypes: []string{"SPAWN"}},
 		{re: regexp.MustCompile(`(?i)\bt_[a-z0-9_]+\b`), defTypes: []string{"TYPEDEF"}},
 		{re: regexp.MustCompile(`(?i)\bs_[a-z0-9_]+\b`), defTypes: []string{"SPELL"}},
 		{re: regexp.MustCompile(`(?i)\br_[a-z0-9_]+\b`), defTypes: []string{"REGIONTYPE", "AREADEF"}},
@@ -130,6 +131,7 @@ var (
 func main() {
 	defIndex := make(map[string]defLocation)
 	defnameIndex := make(map[string]defLocation)
+	idIndex := make(map[string]defLocation)
 	var references []idReference
 	var allErrors []lintError
 
@@ -154,7 +156,7 @@ func main() {
 		}
 		totalFiles++
 
-		fileErrors := lintSCPFile(path, defIndex, defnameIndex, &references)
+		fileErrors := lintSCPFile(path, defIndex, defnameIndex, idIndex, &references)
 		if len(fileErrors) > 0 {
 			for _, e := range fileErrors {
 				filesWithErrorsSet[e.file] = true
@@ -167,7 +169,7 @@ func main() {
 		allErrors = append(allErrors, lintError{file: scriptsDir, line: 1, kind: "CRITICAL", msg: err.Error()})
 	}
 
-	undefErrors := validateUndefinedReferences(references, defIndex, defnameIndex)
+	undefErrors := validateUndefinedReferences(references, defIndex, defnameIndex, idIndex)
 	if len(undefErrors) > 0 {
 		for _, e := range undefErrors {
 			filesWithErrorsSet[e.file] = true
@@ -189,7 +191,7 @@ func main() {
 	}
 }
 
-func lintSCPFile(path string, defIndex map[string]defLocation, defnameIndex map[string]defLocation, references *[]idReference) []lintError {
+func lintSCPFile(path string, defIndex map[string]defLocation, defnameIndex map[string]defLocation, idIndex map[string]defLocation, references *[]idReference) []lintError {
 	var errors []lintError
 	var stack []blockState
 	inTextBlock := false
@@ -243,6 +245,7 @@ func lintSCPFile(path string, defIndex map[string]defLocation, defnameIndex map[
 					id = strings.ToUpper(fields[0])
 				}
 				if id != "" {
+					recordID(idIndex, id, rel, lineNum)
 					key := defType + " " + id
 					if defType == "DIALOG" && len(fields) > 1 {
 						subType := strings.ToUpper(fields[1])
@@ -433,19 +436,32 @@ func normalizeEndToken(token string) string {
 
 func checkBrackets(line string) string {
 	stack := make([]rune, 0, 8)
-	for _, ch := range line {
+	for i := 0; i < len(line); i++ {
+		ch := line[i]
 		switch ch {
-		case '(', '[', '{', '<':
-			stack = append(stack, ch)
-		case ')', ']', '}', '>':
+		case '(', '[', '{':
+			stack = append(stack, rune(ch))
+		case '<':
+			if i+1 < len(line) && isAngleTokenStart(line[i+1]) {
+				end, ok := scanAngleToken(line, i+1)
+				if !ok {
+					return "unclosed '<'"
+				}
+				i = end
+				continue
+			}
+			continue
+		case ')', ']', '}':
 			if len(stack) == 0 {
 				return fmt.Sprintf("unexpected closing '%c'", ch)
 			}
-			expected := bracketPairs[ch]
+			expected := bracketPairs[rune(ch)]
 			if stack[len(stack)-1] != expected {
 				return fmt.Sprintf("expected closing '%c' but found '%c'", stack[len(stack)-1], ch)
 			}
 			stack = stack[:len(stack)-1]
+		case '>':
+			continue
 		}
 	}
 	if len(stack) > 0 {
@@ -456,6 +472,27 @@ func checkBrackets(line string) string {
 		return "unclosed: " + strings.Join(parts, ", ")
 	}
 	return ""
+}
+
+func scanAngleToken(line string, start int) (int, bool) {
+	for i := start; i < len(line); i++ {
+		ch := line[i]
+		if !isAngleTokenChar(ch) {
+			if ch == '>' {
+				return i, true
+			}
+			return i, false
+		}
+	}
+	return len(line), false
+}
+
+func isAngleTokenStart(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || b == '_'
+}
+
+func isAngleTokenChar(b byte) bool {
+	return isAngleTokenStart(b) || (b >= '0' && b <= '9') || b == '.'
 }
 
 func printError(e lintError) {
@@ -588,7 +625,7 @@ func collectIDReferences(line, file string, lineNum int, references *[]idReferen
 	}
 }
 
-func validateUndefinedReferences(references []idReference, defIndex map[string]defLocation, defnameIndex map[string]defLocation) []lintError {
+func validateUndefinedReferences(references []idReference, defIndex map[string]defLocation, defnameIndex map[string]defLocation, idIndex map[string]defLocation) []lintError {
 	if len(references) == 0 {
 		return nil
 	}
@@ -596,6 +633,9 @@ func validateUndefinedReferences(references []idReference, defIndex map[string]d
 	seen := make(map[string]bool)
 	for _, ref := range references {
 		if _, ok := defnameIndex[ref.id]; ok {
+			continue
+		}
+		if _, ok := idIndex[ref.id]; ok {
 			continue
 		}
 		found := false
@@ -649,4 +689,15 @@ func recordDefname(defnameIndex map[string]defLocation, name, file string, lineN
 		return
 	}
 	defnameIndex[upper] = defLocation{file: file, line: lineNum}
+}
+
+func recordID(idIndex map[string]defLocation, name, file string, lineNum int) {
+	upper := strings.ToUpper(name)
+	if upper == "" {
+		return
+	}
+	if _, ok := idIndex[upper]; ok {
+		return
+	}
+	idIndex[upper] = defLocation{file: file, line: lineNum}
 }
