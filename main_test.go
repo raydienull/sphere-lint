@@ -418,6 +418,20 @@ func TestLintTemplateChecks(t *testing.T) {
 	})
 }
 
+func TestLintCommentSection(t *testing.T) {
+	content := joinLines(
+		"[COMMENT sphere_newb]",
+		"If the player choose an race which has no template set, the",
+		"default human template will be used by default.",
+		"  [NEWBIE Alchemy]",
+		"  IF 1",
+		"[ITEMDEF i_test]",
+		"[EOF]",
+	)
+
+	assertNoErrors(t, lintFromContent(t, "comment_section.scp", content), "comment section")
+}
+
 func joinLines(lines ...string) string {
 	return strings.Join(append(lines, ""), "\n")
 }

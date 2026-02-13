@@ -226,6 +226,15 @@ func lintScriptFile(path string, defIndex map[string]definitionLocation, defname
 			continue
 		}
 
+		if inTextBlock {
+			if hasLeadingWhitespace(raw) {
+				continue
+			}
+			if !defHeaderPattern.MatchString(cleaned) && !commentHeaderPattern.MatchString(cleaned) {
+				continue
+			}
+		}
+
 		if commentHeaderPattern.MatchString(cleaned) {
 			issues = appendUnclosedStackErrors(issues, stack, rel, lineNum, " before new section.", false)
 			inTextBlock = true
@@ -424,6 +433,13 @@ func cleanLine(line string) string {
 		line = line[:idx]
 	}
 	return strings.TrimSpace(line)
+}
+
+func hasLeadingWhitespace(line string) bool {
+	if line == "" {
+		return false
+	}
+	return line[0] == ' ' || line[0] == '\t'
 }
 
 func firstToken(line string) string {
@@ -944,10 +960,18 @@ func findUndefinedReferences(references []referenceUse, defIndex map[string]defi
 }
 
 func parseDefnameAssignment(line string) string {
-	if !hasPrefixFold(line, "DEFNAME=") {
-		return ""
+	if hasPrefixFold(line, "DEFNAME=") {
+		value := strings.TrimSpace(line[len("DEFNAME="):])
+		return firstField(value)
 	}
-	value := strings.TrimSpace(line[len("DEFNAME="):])
+	if hasPrefixFold(line, "DEFNAME2=") {
+		value := strings.TrimSpace(line[len("DEFNAME2="):])
+		return firstField(value)
+	}
+	return ""
+}
+
+func firstField(value string) string {
 	if value == "" {
 		return ""
 	}
