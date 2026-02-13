@@ -77,6 +77,7 @@ var (
 		"SPAWN":      true,
 		"SPELL":      true,
 		"TYPEDEF":    true,
+		"TEMPLATE":   true,
 	}
 
 	textKeywords = map[string]bool{
@@ -88,10 +89,10 @@ var (
 	bracketPairs = map[rune]rune{')': '(', ']': '[', '}': '{', '>': '<'}
 
 	missingArgMessages = map[string]string{
-		"WHILE":    "LOGIC: WHILE missing condition.",
-		"FOR":      "LOGIC: FOR missing expression (expected: FOR <expr>, FOR <start> <end>, or FOR <var> <start> <end>).",
-		"DORAND":   "LOGIC: DORAND missing line count.",
-		"DOSWITCH": "LOGIC: DOSWITCH missing line number.",
+		"WHILE":    "LOGIC: WHILE missing condition",
+		"FOR":      "LOGIC: FOR missing expression",
+		"DORAND":   "LOGIC: DORAND missing line count",
+		"DOSWITCH": "LOGIC: DOSWITCH missing line number",
 	}
 
 	forArgTokens = map[string]bool{
@@ -126,6 +127,10 @@ var (
 		"DOSELECT":          "ENDDO",
 		"BEGIN":             "END",
 	}
+
+	itemAssignPattern      = regexp.MustCompile(`(?i)^\s*ITEM\s*=\s*(.*)$`)
+	containerAssignPattern = regexp.MustCompile(`(?i)^\s*CONTAINER\s*=\s*(.*)$`)
+	templateIdentPattern   = regexp.MustCompile(`(?i)\b[a-z_][a-z0-9_]*\b`)
 )
 
 func main() {
@@ -291,7 +296,7 @@ func lintScriptFile(path string, defIndex map[string]definitionLocation, defname
 		if name := parseDefnameAssignment(cleaned); name != "" {
 			upperName := strings.ToUpper(name)
 			recordDefName(defnameIndex, upperName, rel, lineNum)
-			if currentSection == "ITEMDEF" || currentSection == "CHARDEF" {
+			if currentSection == "ITEMDEF" || currentSection == "CHARDEF" || currentSection == "TEMPLATE" {
 				key := currentSection + " " + upperName
 				if _, ok := defIndex[key]; !ok {
 					defIndex[key] = definitionLocation{file: rel, line: lineNum}
@@ -339,7 +344,7 @@ func lintScriptFile(path string, defIndex map[string]definitionLocation, defname
 					if msg, ok := missingArgMessages[upperToken]; ok {
 						issues = appendError(issues, rel, lineNum, "LOGIC", msg)
 					} else if forArgTokens[upperToken] {
-						issues = appendError(issues, rel, lineNum, "LOGIC", fmt.Sprintf("LOGIC: %s missing argument.", upperToken))
+						issues = appendError(issues, rel, lineNum, "LOGIC", fmt.Sprintf("LOGIC: %s missing argument", upperToken))
 					}
 				}
 
@@ -372,6 +377,10 @@ func lintScriptFile(path string, defIndex map[string]definitionLocation, defname
 		}
 
 		if !isTextLine && !isWriteFile {
+			if currentSection == "TEMPLATE" {
+				issues = append(issues, validateTemplateLine(cleaned, rel, lineNum)...)
+				collectTemplateReferences(cleaned, rel, lineNum, references)
+			}
 			if !isAliasSection(currentSection) {
 				collectReferenceUses(cleaned, rel, lineNum, references)
 			}
@@ -522,6 +531,13 @@ func scanAngleExpression(line string, start int) (int, bool) {
 				continue
 			}
 		}
+	}
+	if isEval {
+		end := len(line) - 1
+		if end < 0 {
+			end = 0
+		}
+		return end, true
 	}
 	return len(line), false
 }
@@ -703,6 +719,180 @@ func collectReferenceUses(line, file string, lineNum int, references *[]referenc
 	}
 }
 
+func collectTemplateReferences(line, file string, lineNum int, references *[]referenceUse) {
+	if match := itemAssignPattern.FindStringSubmatch(line); len(match) == 2 {
+		for _, ident := range extractTemplateIdentifiers(match[1]) {
+			*references = append(*references, referenceUse{
+				file:     file,
+				line:     lineNum,
+				defTypes: []string{"ITEMDEF", "TEMPLATE"},
+				id:       strings.ToUpper(ident),
+			})
+		}
+		return
+	}
+	if match := containerAssignPattern.FindStringSubmatch(line); len(match) == 2 {
+		for _, ident := range extractTemplateIdentifiers(match[1]) {
+			*references = append(*references, referenceUse{
+				file:     file,
+				line:     lineNum,
+				defTypes: []string{"ITEMDEF"},
+				id:       strings.ToUpper(ident),
+			})
+		}
+	}
+}
+
+func validateTemplateLine(line, file string, lineNum int) []lintIssue {
+	var issues []lintIssue
+	if match := itemAssignPattern.FindStringSubmatch(line); len(match) == 2 {
+		value := strings.TrimSpace(match[1])
+		if value == "" {
+			issues = appendError(issues, file, lineNum, "LOGIC", "LOGIC: ITEM missing value")
+			return issues
+		}
+		issues = appendTemplateSelectorIssues(issues, file, lineNum, value)
+		return issues
+	}
+	if match := containerAssignPattern.FindStringSubmatch(line); len(match) == 2 {
+		value := strings.TrimSpace(match[1])
+		if value == "" {
+			issues = appendError(issues, file, lineNum, "LOGIC", "LOGIC: CONTAINER missing value")
+			return issues
+		}
+		issues = appendTemplateSelectorIssues(issues, file, lineNum, value)
+	}
+	return issues
+}
+
+func appendTemplateSelectorIssues(issues []lintIssue, file string, lineNum int, value string) []lintIssue {
+	for _, msg := range validateTemplateRanges(value) {
+		issues = appendError(issues, file, lineNum, "SYNTAX", msg)
+	}
+	for _, msg := range validateTemplateRSelectors(value) {
+		issues = appendError(issues, file, lineNum, "SYNTAX", msg)
+	}
+	return issues
+}
+
+func validateTemplateRanges(value string) []string {
+	var errors []string
+	var stack []int
+	for i := 0; i < len(value); i++ {
+		switch value[i] {
+		case '{':
+			stack = append(stack, i)
+		case '}':
+			if len(stack) == 0 {
+				continue
+			}
+			start := stack[len(stack)-1]
+			stack = stack[:len(stack)-1]
+			if start+1 >= i {
+				continue
+			}
+			segment := value[start+1 : i]
+			parts := strings.Fields(segment)
+			if len(parts) == 0 {
+				continue
+			}
+			allNumeric := true
+			for _, part := range parts {
+				if !isAllDigits(part) {
+					allNumeric = false
+					break
+				}
+			}
+			if !allNumeric {
+				continue
+			}
+			if len(parts) != 2 {
+				errors = append(errors, "SYNTAX: template range selector")
+				continue
+			}
+			if isTemplateSpace(value[start+1]) || isTemplateSpace(value[i-1]) {
+				errors = append(errors, "SYNTAX: template range selector")
+			}
+		}
+	}
+	return errors
+}
+
+func validateTemplateRSelectors(value string) []string {
+	var errors []string
+	tokens := templateIdentPattern.FindAllString(value, -1)
+	for _, token := range tokens {
+		if !isRSelectorCandidate(token) {
+			continue
+		}
+		if !isAllDigits(token[1:]) {
+			errors = append(errors, "SYNTAX: template R selector")
+		}
+	}
+	return errors
+}
+
+func isRSelectorCandidate(token string) bool {
+	if len(token) < 2 {
+		return false
+	}
+	first := token[0]
+	if first != 'R' && first != 'r' {
+		return false
+	}
+	return token[1] >= '0' && token[1] <= '9'
+}
+
+func isTemplateSpace(b byte) bool {
+	return b == ' ' || b == '\t'
+}
+
+func isAllDigits(value string) bool {
+	if value == "" {
+		return false
+	}
+	for i := 0; i < len(value); i++ {
+		if value[i] < '0' || value[i] > '9' {
+			return false
+		}
+	}
+	return true
+}
+
+func extractTemplateIdentifiers(value string) []string {
+	if value == "" {
+		return nil
+	}
+	idents := templateIdentPattern.FindAllString(value, -1)
+	if len(idents) == 0 {
+		return nil
+	}
+	result := make([]string, 0, len(idents))
+	for _, ident := range idents {
+		if isTemplateSelectorToken(ident) {
+			continue
+		}
+		result = append(result, ident)
+	}
+	return result
+}
+
+func isTemplateSelectorToken(token string) bool {
+	upper := strings.ToUpper(token)
+	if upper == "ITEM" || upper == "CONTAINER" {
+		return true
+	}
+	if len(upper) > 1 && upper[0] == 'R' {
+		for i := 1; i < len(upper); i++ {
+			if upper[i] < '0' || upper[i] > '9' {
+				return false
+			}
+		}
+		return true
+	}
+	return false
+}
+
 func shouldSkipDynamicID(line string, end int, match string) bool {
 	if end >= len(line) || line[end] != '<' {
 		return false
@@ -747,7 +937,7 @@ func findUndefinedReferences(references []referenceUse, defIndex map[string]defi
 			file: ref.file,
 			line: ref.line,
 			kind: "UNDECLARED",
-			msg:  fmt.Sprintf("UNDECLARED: '%s' not defined as %s or DEFNAME.", ref.id, typeLabel),
+			msg:  fmt.Sprintf("UNDECLARED: '%s' not defined as %s", ref.id, typeLabel),
 		})
 	}
 	return errors
