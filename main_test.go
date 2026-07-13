@@ -202,7 +202,8 @@ func TestLintSyntaxErrors(t *testing.T) {
 			line string
 		}{
 			{name: "ParenMismatch", line: "IF (1"},
-			{name: "AngleMismatch", line: "IF <SRC.NPC"},
+			{name: "UnexpectedClose", line: "IF 1)"},
+			{name: "BraceBracketMismatch", line: "MORE={1]"},
 		}
 
 		for _, tc := range cases {
@@ -430,6 +431,64 @@ func TestLintCommentSection(t *testing.T) {
 	)
 
 	assertNoErrors(t, lintFromContent(t, "comment_section.scp", content), "comment section")
+}
+
+func TestLintBOMHeader(t *testing.T) {
+	// A UTF-8 BOM on the first line must not hide the opening [SECTION] header,
+	// otherwise the definition is missed and the header is mis-read as content.
+	content := "\ufeff" + joinLines(
+		"[FUNCTION f_test]",
+		"return 1",
+		"[FUNCTION f_caller]",
+		"f_test",
+		"[EOF]",
+	)
+
+	assertNoErrors(t, lintFromContent(t, "bom_header.scp", content), "BOM header")
+}
+
+func TestLintDataMemberAccess(t *testing.T) {
+	// tag/var/local/ctag members are arbitrary names, not references to defs.
+	lines := []string{
+		"tag0.spawn_array=1",
+		"var0.f_validate_spawns=1",
+		"local.amt=<ctag.spawn_amt>",
+		"local.spawn_array=<dlocal.f_missing>",
+	}
+
+	for i, line := range lines {
+		content := joinLines(
+			"[CHARDEF c_test]",
+			"ON=@Create",
+			line,
+			"[EOF]",
+		)
+		assertNoErrors(t, lintFromContent(t, fmt.Sprintf("data_member_%d.scp", i), content), fmt.Sprintf("data member case %d", i))
+	}
+}
+
+func TestLintDataMemberStillCatchesRealCall(t *testing.T) {
+	// A function call on an object (I.f_missing) is a real reference and must
+	// still be reported when undefined.
+	content := joinLines(
+		"[CHARDEF c_test]",
+		"ON=@Create",
+		"I.f_missing",
+		"[EOF]",
+	)
+
+	assertHasMessage(t, lintFromContent(t, "object_call.scp", content), "UNDECLARED: 'F_MISSING'")
+}
+
+func TestLintMultidefReference(t *testing.T) {
+	content := joinLines(
+		"[MULTIDEF m_test_house]",
+		"[ITEMDEF i_deed_test]",
+		"MORE=m_test_house",
+		"[EOF]",
+	)
+
+	assertNoErrors(t, lintFromContent(t, "multidef_reference.scp", content), "multidef reference")
 }
 
 func joinLines(lines ...string) string {

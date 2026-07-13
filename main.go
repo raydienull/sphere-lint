@@ -78,6 +78,7 @@ var (
 		"SPELL":      true,
 		"TYPEDEF":    true,
 		"TEMPLATE":   true,
+		"MULTIDEF":   true,
 	}
 
 	textKeywords = map[string]bool{
@@ -87,6 +88,21 @@ var (
 	}
 
 	bracketPairs = map[rune]rune{')': '(', ']': '[', '}': '{', '>': '<'}
+
+	// dataMemberPrefixes are storage accessors whose members are tag/var/local
+	// names, not references to definitions. An identifier written as
+	// TAG0.spawn_array or VAR.f_validate must not be treated as a SPAWN/FUNCTION
+	// reference.
+	dataMemberPrefixes = map[string]bool{
+		"TAG":    true,
+		"TAG0":   true,
+		"VAR":    true,
+		"VAR0":   true,
+		"LOCAL":  true,
+		"DLOCAL": true,
+		"CTAG":   true,
+		"CTAG0":  true,
+	}
 
 	missingArgMessages = map[string]string{
 		"WHILE":    "LOGIC: WHILE missing condition",
@@ -218,6 +234,9 @@ func lintScriptFile(path string, defIndex map[string]definitionLocation, defname
 	for scanner.Scan() {
 		lineNum++
 		raw := scanner.Text()
+		if lineNum == 1 {
+			raw = strings.TrimPrefix(raw, "\ufeff")
+		}
 		cleaned := cleanLine(raw)
 		if cleaned != "" {
 			lastNonEmpty = cleaned
@@ -461,6 +480,16 @@ func normalizeEndToken(token string) string {
 	}
 }
 
+// checkBrackets validates that (), [] and {} are balanced on a line.
+//
+// It deliberately ignores '<' and '>'. In Sphere script those characters are
+// overloaded: they delimit template expressions (<SRC.NAME>) but are also the
+// greater/less-than comparison operators, and both forms are freely nested and
+// mixed (e.g. <eval <tag0.ra> + 10> <= 24). There is no reliable local rule to
+// tell a closing '>' from a comparison, so any attempt to match them produces
+// far more false positives than genuine catches. The parentheses/brackets
+// inside a valid template expression are themselves balanced, so counting them
+// blindly across the whole line is both simpler and correct.
 func checkBrackets(line string) string {
 	stack := make([]rune, 0, 8)
 	for i := 0; i < len(line); i++ {
@@ -468,16 +497,6 @@ func checkBrackets(line string) string {
 		switch ch {
 		case '(', '[', '{':
 			stack = append(stack, rune(ch))
-		case '<':
-			if i+1 < len(line) && isAngleTokenStart(line[i+1]) {
-				end, ok := scanAngleExpression(line, i+1)
-				if !ok {
-					return "unclosed '<'"
-				}
-				i = end
-				continue
-			}
-			continue
 		case ')', ']', '}':
 			if len(stack) == 0 {
 				return fmt.Sprintf("unexpected closing '%c'", ch)
@@ -487,8 +506,6 @@ func checkBrackets(line string) string {
 				return fmt.Sprintf("expected closing '%c' but found '%c'", stack[len(stack)-1], ch)
 			}
 			stack = stack[:len(stack)-1]
-		case '>':
-			continue
 		}
 	}
 	if len(stack) > 0 {
@@ -499,106 +516,6 @@ func checkBrackets(line string) string {
 		return "unclosed: " + strings.Join(parts, ", ")
 	}
 	return ""
-}
-
-func scanAngleExpression(line string, start int) (int, bool) {
-	isEval := isAngleEvalStart(line, start)
-	depth := 1
-	parenDepth := 0
-	for i := start; i < len(line); i++ {
-		switch line[i] {
-		case '<':
-			if i+1 < len(line) && isAngleTokenStart(line[i+1]) {
-				depth++
-			}
-		case '>':
-			if depth > 1 {
-				depth--
-				if depth == 0 {
-					return i, true
-				}
-				continue
-			}
-			if !isEval {
-				depth--
-				if depth == 0 {
-					return i, true
-				}
-				continue
-			}
-			if isAngleCloseCandidate(line, i, parenDepth) {
-				depth--
-				if depth == 0 {
-					return i, true
-				}
-			}
-		default:
-			if isEval {
-				switch line[i] {
-				case '(':
-					parenDepth++
-				case ')':
-					if parenDepth > 0 {
-						parenDepth--
-					}
-				}
-			}
-			if !isAngleTokenChar(line[i]) {
-				continue
-			}
-		}
-	}
-	if isEval {
-		end := len(line) - 1
-		if end < 0 {
-			end = 0
-		}
-		return end, true
-	}
-	return len(line), false
-}
-
-func isAngleCloseCandidate(line string, index int, parenDepth int) bool {
-	if parenDepth > 0 {
-		return false
-	}
-	if index+1 < len(line) && line[index+1] == '=' {
-		return false
-	}
-	for i := index + 1; i < len(line); i++ {
-		if line[i] == ' ' || line[i] == '\t' {
-			continue
-		}
-		switch line[i] {
-		case ')', ']', '}', ',', ';':
-			return true
-		default:
-			return false
-		}
-	}
-	return true
-}
-
-func isAngleEvalStart(line string, start int) bool {
-	if start+4 > len(line) {
-		return false
-	}
-	if strings.ToUpper(line[start:start+4]) != "EVAL" {
-		return false
-	}
-	if start+4 >= len(line) {
-		return true
-	}
-	next := line[start+4]
-	return next == ' ' || next == '(' || next == '\t'
-}
-
-func isAngleTokenStart(b byte) bool {
-	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || b == '_'
-}
-
-func isAngleTokenChar(b byte) bool {
-	return isAngleTokenStart(b) || (b >= '0' && b <= '9') || b == '.'
 }
 
 func printError(e lintIssue) {
@@ -723,6 +640,9 @@ func collectReferenceUses(line, file string, lineNum int, references *[]referenc
 		for _, idx := range indices {
 			match := line[idx[0]:idx[1]]
 			if shouldSkipDynamicID(line, idx[1], match) {
+				continue
+			}
+			if precededByDataMember(line, idx[0]) {
 				continue
 			}
 			*references = append(*references, referenceUse{
@@ -907,6 +827,29 @@ func isTemplateSelectorToken(token string) bool {
 		return true
 	}
 	return false
+}
+
+// precededByDataMember reports whether the identifier starting at start is a
+// member access on a data-storage accessor (TAG0.foo, VAR.foo, LOCAL.foo, ...).
+// Such members are arbitrary names, not references to definitions.
+func precededByDataMember(line string, start int) bool {
+	if start == 0 || line[start-1] != '.' {
+		return false
+	}
+	dot := start - 1
+	i := dot - 1
+	for i >= 0 && isWordByte(line[i]) {
+		i--
+	}
+	if i+1 >= dot {
+		return false
+	}
+	word := strings.ToUpper(line[i+1 : dot])
+	return dataMemberPrefixes[word]
+}
+
+func isWordByte(b byte) bool {
+	return (b >= 'A' && b <= 'Z') || (b >= 'a' && b <= 'z') || (b >= '0' && b <= '9') || b == '_'
 }
 
 func shouldSkipDynamicID(line string, end int, match string) bool {
